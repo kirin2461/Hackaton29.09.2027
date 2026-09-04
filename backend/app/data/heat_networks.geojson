@@ -1,0 +1,94 @@
+{
+ "type": "FeatureCollection",
+ "crs": {
+  "type": "name",
+  "properties": {
+   "name": "EPSG:32637"
+  }
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "h1",
+    "name": "Тепломагистраль ЦТП-1 — ЦТП-2",
+    "diameter_mm": 300
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413050.0,
+      6171300.0
+     ],
+     [
+      413250.0,
+      6171300.0
+     ],
+     [
+      413450.0,
+      6171300.0
+     ],
+     [
+      413650.0,
+      6171300.0
+     ],
+     [
+      413850.0,
+      6171300.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "h2",
+    "name": "Ответвление на северный квартал",
+    "diameter_mm": 200
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413450.0,
+      6171300.0
+     ],
+     [
+      413450.0,
+      6171520.0
+     ],
+     [
+      413650.0,
+      6171520.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "h3",
+    "name": "Ответвление на южный квартал",
+    "diameter_mm": 150
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413250.0,
+      6171300.0
+     ],
+     [
+      413250.0,
+      6171100.0
+     ],
+     [
+      413450.0,
+      6171100.0
+     ]
+    ]
+   }
+  }
+ ]
+}

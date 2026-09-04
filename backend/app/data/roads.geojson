@@ -1,0 +1,200 @@
+{
+ "type": "FeatureCollection",
+ "crs": {
+  "type": "name",
+  "properties": {
+   "name": "EPSG:32637"
+  }
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r0",
+    "name": "Продольная ул. 1",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413050.0,
+      6171020.0
+     ],
+     [
+      413050.0,
+      6171780.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r1",
+    "name": "Продольная ул. 2",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413250.0,
+      6171020.0
+     ],
+     [
+      413250.0,
+      6171780.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r2",
+    "name": "Продольная ул. 3",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413450.0,
+      6171020.0
+     ],
+     [
+      413450.0,
+      6171780.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r3",
+    "name": "Продольная ул. 4",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413650.0,
+      6171020.0
+     ],
+     [
+      413650.0,
+      6171780.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r4",
+    "name": "Продольная ул. 5",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413850.0,
+      6171020.0
+     ],
+     [
+      413850.0,
+      6171780.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r10",
+    "name": "Поперечная ул. 1",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413020.0,
+      6171100.0
+     ],
+     [
+      413880.0,
+      6171100.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r11",
+    "name": "Поперечная ул. 2",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413020.0,
+      6171300.0
+     ],
+     [
+      413880.0,
+      6171300.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r12",
+    "name": "Поперечная ул. 3",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413020.0,
+      6171520.0
+     ],
+     [
+      413880.0,
+      6171520.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r13",
+    "name": "Поперечная ул. 4",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413020.0,
+      6171720.0
+     ],
+     [
+      413880.0,
+      6171720.0
+     ]
+    ]
+   }
+  }
+ ]
+}

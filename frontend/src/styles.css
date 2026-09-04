@@ -1,0 +1,72 @@
+/* Общие стили приложения: тёмная тема, панель слева, сцена справа. */
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0e1626;
+  color: #dfe6e9;
+}
+
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.scene-mount {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --- панель инструментов --- */
+.toolbar {
+  width: 300px;
+  padding: 18px;
+  background: #141f33;
+  border-right: 1px solid #22314d;
+  overflow-y: auto;
+}
+
+.toolbar h1 { font-size: 20px; margin: 0 0 8px; }
+.toolbar h2 { font-size: 15px; margin: 8px 0 4px; }
+
+.status { font-size: 13px; }
+.status.ok { color: #55efc4; }
+.status.bad { color: #ff7675; }
+
+.group {
+  margin: 14px 0;
+  padding: 12px;
+  background: #1a2740;
+  border-radius: 10px;
+}
+
+button {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  padding: 9px 12px;
+  border: 1px solid #2f4468;
+  border-radius: 8px;
+  background: #22314d;
+  color: #dfe6e9;
+  cursor: pointer;
+  text-align: left;
+}
+button:hover { background: #2a3d5f; }
+button.active { background: #0984e3; border-color: #74b9ff; }
+button.reset { background: #4a2331; border-color: #6d3145; }
+
+label { display: block; font-size: 13px; margin: 8px 0; }
+input[type='range'] { width: 100%; }
+
+.hint { font-size: 12px; color: #9fb2cc; }
+
+.network-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+.network-list li { padding: 6px 8px; border-radius: 6px; }
+.network-list li.selected { background: #3d3417; color: #fdcb6e; }
+
+.result p { margin: 4px 0; font-size: 13px; }
+.error { color: #ff7675; font-size: 13px; }

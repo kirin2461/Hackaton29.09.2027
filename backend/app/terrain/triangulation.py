@@ -20,13 +20,14 @@ from scipy.spatial import Delaunay
 from ..config import TERRAIN_GRID, TERRAIN_SIZE_M
 
 
-def demo_height(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+def demo_height(x: np.ndarray, y: np.ndarray,
+                size: float = TERRAIN_SIZE_M) -> np.ndarray:
     """Синтетическая высота рельефа (метры) в точке (x, y).
 
     Сумма гауссовых холмов + пологая волнистость — даёт наглядный
     low-poly ландшафт после триангуляции.
     """
-    s = TERRAIN_SIZE_M
+    s = size
     z = (
         30 * np.exp(-(((x - 0.30 * s) ** 2 + (y - 0.35 * s) ** 2) / (2 * (0.12 * s) ** 2)))
         + 18 * np.exp(-(((x - 0.70 * s) ** 2 + (y - 0.65 * s) ** 2) / (2 * (0.15 * s) ** 2)))
@@ -51,7 +52,7 @@ def sample_terrain_points(size: float = TERRAIN_SIZE_M,
     jitter = (size / grid) * 0.25
     xx = xx + rng.uniform(-jitter, jitter, xx.shape)
     yy = yy + rng.uniform(-jitter, jitter, yy.shape)
-    zz = demo_height(xx, yy)
+    zz = demo_height(xx, yy, size)
     return np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
 
 
@@ -81,6 +82,10 @@ def triangulate(points: np.ndarray) -> dict:
     }
 
 
-def terrain_mesh() -> dict:
-    """Готовый ответ для GET /api/terrain/mesh — демо-рельеф."""
-    return triangulate(sample_terrain_points())
+def terrain_mesh(size: float = TERRAIN_SIZE_M) -> dict:
+    """Готовый ответ для GET /api/terrain/mesh — демо-рельеф.
+
+    size подгоняется под охват геоданных, чтобы рельеф накрывал
+    всю карту (для реальных слоёв OSM она не обязана быть 1000×1000).
+    """
+    return triangulate(sample_terrain_points(size=size))

@@ -13,6 +13,7 @@ import {
   postRoute, postValidate, postSave,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
+import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
 
 export default function App() {
   // Данные с бэкенда.
@@ -194,28 +195,52 @@ export default function App() {
   }, []);
 
   // ---------- демо-сценарий в один клик (для показа жюри) ----------
-  // Ставит 9-этажку на свободную площадку (300, 800) у дальнего края
-  // карты и строит трассы к теплосети h2: варианты заметно различаются,
-  // что наглядно показывает работу штрафов.
+  // Ищет свободную площадку 40×40 м в 60–500 м от первой теплосети
+  // (не пересекает существующую застройку), ставит туда 9-этажку
+  // и запускает трассировку. Работает на любых загруженных данных.
   const handleDemo = useCallback(() => {
-    const cx = 300, cy = 800, h = 20;
+    const layers = layersData?.layers;
+    const bounds = layersData?.bounds;
+    const network = layers?.heat_networks?.[0];
+    if (!layers || !bounds || !network) {
+      setError('Карта ещё не загрузилась');
+      return;
+    }
+    const [x0, y0, x1, y1] = bounds;
+    const buildings = layers.buildings ?? [];
+    const half = 20;
+    let best = null;
+    for (let x = x0 + 80; x < x1 - 80; x += 50) {
+      for (let y = y0 + 80; y < y1 - 80; y += 50) {
+        if (buildings.some((b) => boxIntersectsPolygon(x, y, half + 5, b.coordinates))) continue;
+        const dNet = distToPolyline(x, y, network.coordinates);
+        if (dNet < 60 || dNet > 500) continue; // не вплотную к трубе и не через полкарты
+        const score = Math.abs(dNet - 250);  // идеальная демо-дистанция ~250 м
+        if (!best || score < best.score) best = { x, y, score };
+      }
+    }
+    if (!best) {
+      setError('Не нашлось свободной площадки рядом с теплосетью');
+      return;
+    }
+    const { x: cx, y: cy } = best;
     const polygon = [
-      [cx - h, cy - h],
-      [cx + h, cy - h],
-      [cx + h, cy + h],
-      [cx - h, cy + h],
+      [cx - half, cy - half],
+      [cx + half, cy - half],
+      [cx + half, cy + half],
+      [cx - half, cy + half],
     ];
     const building = { polygon, floors: 9, center: [cx, cy] };
     setNewBuilding(building);
-    setSelectedNetworkId('h2');
+    setSelectedNetworkId(network.id);
     setRouteData(null);
     setValidation(null);
     setEditPath(null);
     setSavedId(null);
     setError(null);
     setMode('view');
-    runRouting(building, 'h2', turnPenalty, roadMult);
-  }, [runRouting, turnPenalty, roadMult]);
+    runRouting(building, network.id, turnPenalty, roadMult);
+  }, [layersData, runRouting, turnPenalty, roadMult]);
 
   const networks = layersData?.layers?.heat_networks ?? [];
 

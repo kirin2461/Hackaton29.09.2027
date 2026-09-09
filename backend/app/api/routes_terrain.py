@@ -1,22 +1,32 @@
 """Роуты рельефа / триангуляции (День 3)."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from ..deps import get_parser
+from ..gis.parser import GISParser
 from ..terrain.triangulation import terrain_mesh, triangulate
 
 router = APIRouter(prefix="/api/terrain", tags=["terrain"])
 
 
 @router.get("/mesh")
-def get_terrain_mesh():
+def get_terrain_mesh(parser: GISParser = Depends(get_parser)):
     """Low-poly сетка демо-рельефа: плоские массивы vertices и faces.
+
+    Размер участка подгоняется под охват загруженных геоданных,
+    чтобы рельеф накрывал всю карту (у реальных слоёв OSM она
+    не обязана быть 1000×1000 м).
 
     Фронтенд собирает из них THREE.BufferGeometry:
       geometry.setAttribute('position', Float32BufferAttribute(vertices, 3));
       geometry.setIndex(faces);
     """
-    return terrain_mesh()
+    raw = parser._bounds()
+    size = max(raw[2] - raw[0], raw[3] - raw[1]) if raw else None
+    if size is None or size <= 0:
+        return terrain_mesh()
+    return terrain_mesh(size=size * 1.05)  # небольшой запас по краям
 
 
 class PointsRequest(BaseModel):

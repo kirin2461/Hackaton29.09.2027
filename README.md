@@ -73,10 +73,11 @@
 │       │   ├── routes_map.py     # GET /api/map/layers (День 2)
 │       │   ├── routes_terrain.py # GET /api/terrain/mesh (День 3)
 │       │   └── routes_project.py # POST /api/project/connect (День 5)
-│       └── data/               # демо-геоданные (GeoJSON)
-│           ├── buildings.geojson
-│           ├── roads.geojson
-│           └── heat_networks.geojson
+│       └── data/               # геоданные (GeoJSON)
+│           ├── buildings.geojson      # здания (OpenStreetMap)
+│           ├── roads.geojson          # дороги (OpenStreetMap)
+│           ├── heat_networks.geojson  # теплосети (OpenStreetMap)
+│           └── fetch_osm.py      # загрузчик слоёв из OSM через Overpass API
 ├── frontend/           # React + Three.js
 │   ├── package.json
 │   ├── vite.config.js
@@ -126,6 +127,20 @@ npm run dev
 ```
 
 Приложение: http://localhost:5173 (запросы `/api/*` проксируются на порт 8000).
+
+## Данные
+
+Сервис работает на **реальных геоданных OpenStreetMap**: район
+Западное Дегунино (Москва, САО) — 201 здание, 155 дорог и реальная
+теплотрасса (`man_made=pipeline`, `substance=heat`), идущая от
+котельной вдоль Бусиновского проезда и Ижорской улицы.
+
+Загрузить слои для любого другого участка (bbox в градусах WGS84):
+
+```bash
+cd backend
+python -m app.data.fetch_osm 55.8826 37.4920 55.8943 37.5129
+```
 
 ## Как пользоваться (День 5)
 

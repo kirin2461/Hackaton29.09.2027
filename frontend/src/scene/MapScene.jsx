@@ -112,7 +112,7 @@ export default function MapScene({
     };
     window.addEventListener('resize', onResize);
 
-    stateRef.current = { scene, camera, renderer, controls, gizmo, gizmoHelper };
+    stateRef.current = { scene, camera, renderer, controls, gizmo, gizmoHelper, sun };
     window.__scene = scene; // для экспорта GLB (День 16)
     window.__gizmoHelper = gizmoHelper;
 
@@ -125,6 +125,29 @@ export default function MapScene({
       renderer.dispose();
     };
   }, []);
+
+  // ---------- центровка камеры и солнца на охвате карты ----------
+  useEffect(() => {
+    const { camera, controls, sun } = stateRef.current;
+    if (!camera || !layersData?.bounds) return;
+    const [x0, y0, x1, y1] = layersData.bounds;
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const size = Math.max(x1 - x0, y1 - y0);
+    controls.target.set(cx, 0, -cy);
+    camera.position.set(cx + size * 0.05, size * 0.55, -cy + size * 0.62);
+    // Теневая камера солнца накрывает всю карту, а не фиксированный квадрат.
+    sun.position.set(cx + size * 0.4, size * 0.75, -cy + size * 0.3);
+    sun.target.position.set(cx, 0, -cy);
+    sun.target.updateMatrixWorld();
+    const s = size * 0.75;
+    sun.shadow.camera.left = -s;
+    sun.shadow.camera.right = s;
+    sun.shadow.camera.top = s;
+    sun.shadow.camera.bottom = -s;
+    sun.shadow.camera.updateProjectionMatrix();
+    controls.update();
+  }, [layersData]);
 
   // ---------- рельеф (День 3-4) ----------
   useEffect(() => {

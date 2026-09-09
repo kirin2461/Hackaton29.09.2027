@@ -58,7 +58,7 @@ function buildGableRoof(ring, baseHeight) {
   const W = (alongX ? d : w) / 2;  // полупролёт
   const H = Math.max(2, Math.min(6, W * 0.45)); // высота конька
   const A = alongX ? [1, 0] : [0, 1]; // ось конька
-  const B = [A[1], A[0] ? 0 : 1];   // поперечная ось
+  const B = [A[1], A[0]];             // поперечная ось (перпендикуляр)
   // вершины в КАРТОВЫХ координатах (x, y, высота)
   const corner = (sa, sb, h) => [
     cx + A[0] * L * sa + B[0] * W * sb,
@@ -85,6 +85,7 @@ function buildGableRoof(ring, baseHeight) {
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
     color: 0x96422f, flatShading: true, // черепица
+    side: THREE.DoubleSide, // скаты видны с любой стороны
   }));
   mesh.castShadow = true;
   return mesh;
@@ -123,7 +124,17 @@ export function buildBuilding(feature) {
   const group = new THREE.Group();
   group.add(body);
 
-  if (floors <= 3) {
+  // Двускатная крыша — только для небольших домов: на большом
+  // промышленном контуре призма по охвату превращается в гигантский
+  // навес, поэтому крупные малоэтажки получают плоскую крышу с парапетом.
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+  for (const [x, y] of ring) {
+    minx = Math.min(minx, x); maxx = Math.max(maxx, x);
+    miny = Math.min(miny, y); maxy = Math.max(maxy, y);
+  }
+  const smallFootprint = Math.max(maxx - minx, maxy - miny) <= 45;
+
+  if (floors <= 3 && smallFootprint) {
     group.add(buildGableRoof(ring, height)); // домик с крышей
   } else {
     // парапет: контур, слегка суженный к центроиду, +1.2 м

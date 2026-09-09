@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.routes_map import router as map_router
 from .api.routes_project import router as project_router
+from .api.routes_route import router as route_router
 from .api.routes_terrain import router as terrain_router
 from .config import BASE_DIR, CORS_ORIGINS
 
@@ -35,6 +36,7 @@ app.add_middleware(
 app.include_router(map_router)
 app.include_router(terrain_router)
 app.include_router(project_router)
+app.include_router(route_router)
 
 
 @app.get("/api/health")

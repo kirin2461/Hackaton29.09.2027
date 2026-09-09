@@ -32,7 +32,7 @@ CORS_ORIGINS = os.getenv(
 # Параметры сетки рельефа для триангуляции (День 3):
 # размер квадратного участка в метрах и число узлов сетки по одной оси.
 TERRAIN_SIZE_M = float(os.getenv("TERRAIN_SIZE_M", "1000"))
-TERRAIN_GRID = int(os.getenv("TERRAIN_GRID", "40"))
+TERRAIN_GRID = int(os.getenv("TERRAIN_GRID", "64"))
 
 # Высота одного этажа в метрах — для «выдавливания» зданий (День 4).
 FLOOR_HEIGHT_M = float(os.getenv("FLOOR_HEIGHT_M", "3.0"))

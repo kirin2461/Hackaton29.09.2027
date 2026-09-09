@@ -3,7 +3,7 @@
  "crs": {
   "type": "name",
   "properties": {
-   "name": "EPSG:32637"
+   "name": "urn:ogc:def:crs:EPSG::32637"
   }
  },
  "features": [
@@ -11,18 +11,30 @@
    "type": "Feature",
    "properties": {
     "id": "r0",
-    "name": "Продольная ул. 1",
+    "name": "ул. Западная",
     "highway": "residential"
    },
    "geometry": {
     "type": "LineString",
     "coordinates": [
      [
-      413050.0,
+      413060.0,
       6171020.0
      ],
      [
-      413050.0,
+      413075.0,
+      6171220.0
+     ],
+     [
+      413055.0,
+      6171420.0
+     ],
+     [
+      413070.0,
+      6171620.0
+     ],
+     [
+      413060.0,
       6171780.0
      ]
     ]
@@ -32,7 +44,7 @@
    "type": "Feature",
    "properties": {
     "id": "r1",
-    "name": "Продольная ул. 2",
+    "name": "ул. Центральная",
     "highway": "residential"
    },
    "geometry": {
@@ -43,7 +55,36 @@
       6171020.0
      ],
      [
-      413250.0,
+      413260.0,
+      6171200.0
+     ],
+     [
+      413245.0,
+      6171360.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r1_1",
+    "name": "ул. Центральная",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413235.0,
+      6171480.0
+     ],
+     [
+      413255.0,
+      6171620.0
+     ],
+     [
+      413245.0,
       6171780.0
      ]
     ]
@@ -53,7 +94,7 @@
    "type": "Feature",
    "properties": {
     "id": "r2",
-    "name": "Продольная ул. 3",
+    "name": "ул. Восточная",
     "highway": "residential"
    },
    "geometry": {
@@ -62,6 +103,39 @@
      [
       413450.0,
       6171020.0
+     ],
+     [
+      413465.0,
+      6171140.0
+     ],
+     [
+      413445.0,
+      6171220.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r2_1",
+    "name": "ул. Восточная",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413460.0,
+      6171360.0
+     ],
+     [
+      413440.0,
+      6171520.0
+     ],
+     [
+      413455.0,
+      6171660.0
      ],
      [
       413450.0,
@@ -74,7 +148,7 @@
    "type": "Feature",
    "properties": {
     "id": "r3",
-    "name": "Продольная ул. 4",
+    "name": "ул. Дальняя",
     "highway": "residential"
    },
    "geometry": {
@@ -83,6 +157,39 @@
      [
       413650.0,
       6171020.0
+     ],
+     [
+      413665.0,
+      6171180.0
+     ],
+     [
+      413645.0,
+      6171340.0
+     ],
+     [
+      413660.0,
+      6171500.0
+     ],
+     [
+      413640.0,
+      6171580.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r3_1",
+    "name": "ул. Дальняя",
+    "highway": "residential"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413660.0,
+      6171660.0
      ],
      [
       413650.0,
@@ -95,7 +202,7 @@
    "type": "Feature",
    "properties": {
     "id": "r4",
-    "name": "Продольная ул. 5",
+    "name": "ул. Окраинная",
     "highway": "residential"
    },
    "geometry": {
@@ -104,6 +211,14 @@
      [
       413850.0,
       6171020.0
+     ],
+     [
+      413865.0,
+      6171270.0
+     ],
+     [
+      413845.0,
+      6171540.0
      ],
      [
       413850.0,
@@ -116,7 +231,7 @@
    "type": "Feature",
    "properties": {
     "id": "r10",
-    "name": "Поперечная ул. 1",
+    "name": "пер. Южный",
     "highway": "secondary"
    },
    "geometry": {
@@ -127,7 +242,15 @@
       6171100.0
      ],
      [
-      413880.0,
+      413220.0,
+      6171115.0
+     ],
+     [
+      413420.0,
+      6171095.0
+     ],
+     [
+      413520.0,
       6171100.0
      ]
     ]
@@ -136,8 +259,29 @@
   {
    "type": "Feature",
    "properties": {
+    "id": "r10_1",
+    "name": "пер. Южный",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413640.0,
+      6171090.0
+     ],
+     [
+      413880.0,
+      6171105.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
     "id": "r11",
-    "name": "Поперечная ул. 2",
+    "name": "пер. Средний",
     "highway": "secondary"
    },
    "geometry": {
@@ -146,6 +290,35 @@
      [
       413020.0,
       6171300.0
+     ],
+     [
+      413170.0,
+      6171310.0
+     ],
+     [
+      413300.0,
+      6171295.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r11_1",
+    "name": "пер. Средний",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413420.0,
+      6171305.0
+     ],
+     [
+      413670.0,
+      6171290.0
      ],
      [
       413880.0,
@@ -158,7 +331,7 @@
    "type": "Feature",
    "properties": {
     "id": "r12",
-    "name": "Поперечная ул. 3",
+    "name": "пер. Северный",
     "highway": "secondary"
    },
    "geometry": {
@@ -169,8 +342,50 @@
       6171520.0
      ],
      [
+      413320.0,
+      6171530.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r12_1",
+    "name": "пер. Северный",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413400.0,
+      6171515.0
+     ],
+     [
+      413540.0,
+      6171525.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r12_2",
+    "name": "пер. Северный",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413620.0,
+      6171515.0
+     ],
+     [
       413880.0,
-      6171520.0
+      6171525.0
      ]
     ]
    }
@@ -179,7 +394,7 @@
    "type": "Feature",
    "properties": {
     "id": "r13",
-    "name": "Поперечная ул. 4",
+    "name": "пер. Верхний",
     "highway": "secondary"
    },
    "geometry": {
@@ -190,8 +405,33 @@
       6171720.0
      ],
      [
+      413200.0,
+      6171730.0
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "id": "r13_1",
+    "name": "пер. Верхний",
+    "highway": "secondary"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      413320.0,
+      6171715.0
+     ],
+     [
+      413570.0,
+      6171725.0
+     ],
+     [
       413880.0,
-      6171720.0
+      6171715.0
      ]
     ]
    }

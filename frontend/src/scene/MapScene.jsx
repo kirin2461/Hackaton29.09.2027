@@ -8,12 +8,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildTerrainMesh, mapToScene, makeHeightSampler } from './terrain';
 import { buildBuilding, buildNewBuilding, buildMarker, drapeOnTerrain } from './buildings';
-import { buildRoads, buildHeatNetworks, highlightHeat, buildConnectionLine } from './networks';
+import { buildRoads, buildHeatNetworks, highlightHeat } from './networks';
+import { buildRoutes } from './routes';
+import { buildTrees } from './trees';
 
 export default function MapScene({
   meshData, layersData, mode, floors, buildingSize,
-  newBuilding, selectedNetworkId, connection,
-  onTerrainClick, onNetworkClick,
+  newBuilding, selectedNetworkId, routes, selectedRouteKey,
+  onTerrainClick, onNetworkClick, onRouteClick,
 }) {
   const mountRef = useRef(null);
   const stateRef = useRef({}); // «ручка» к живым объектам сцены между эффектами
@@ -22,28 +24,41 @@ export default function MapScene({
   useEffect(() => {
     const mount = mountRef.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0e1626);
-    scene.fog = new THREE.Fog(0x0e1626, 1500, 4000);
+    // Дневное небо + дымка на горизонте.
+    scene.background = new THREE.Color(0x87b5d9);
+    scene.fog = new THREE.Fog(0x9db8d2, 1600, 4500);
 
     const camera = new THREE.PerspectiveCamera(
       55, mount.clientWidth / mount.clientHeight, 1, 10000,
     );
-    camera.position.set(450, 700, 900);
+    camera.position.set(450, 520, 640);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true; // мягкие тени от зданий и деревьев
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     mount.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(450, 0, -380); // центр демо-карты
     controls.enableDamping = true;
+    controls.maxPolarAngle = Math.PI * 0.49; // не уходить под землю
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+    // Небесное рассеянное освещение + солнце с тенями.
+    scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x4a6741, 0.9));
+    const sun = new THREE.DirectionalLight(0xfff4e0, 1.8);
     sun.position.set(600, 900, 400);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    const S = 750; // теневая камера покрывает всю карту
+    sun.shadow.camera.left = -S;
+    sun.shadow.camera.right = S;
+    sun.shadow.camera.top = S;
+    sun.shadow.camera.bottom = -S;
+    sun.shadow.camera.far = 3000;
+    sun.shadow.bias = -0.0004;
     scene.add(sun);
-    scene.add(new THREE.GridHelper(1200, 24, 0x2d3a4f, 0x1c2739));
 
     // Цикл отрисовки.
     let frameId;
@@ -102,6 +117,10 @@ export default function MapScene({
     scene.add(bGroup);
     scene.add(buildRoads(layersData.layers.roads, sampler));
     scene.add(buildHeatNetworks(layersData.layers.heat_networks, sampler));
+    // Деревья на пустырях — между зданиями, дорогами и теплосетями.
+    const oldTrees = scene.getObjectByName('trees');
+    if (oldTrees) scene.remove(oldTrees);
+    scene.add(buildTrees(layersData, layersData.bounds, sampler));
   }, [layersData, meshData]);
 
   // ---------- новое здание / маркер Точки Б (День 5) ----------
@@ -131,14 +150,16 @@ export default function MapScene({
     if (group) highlightHeat(group, selectedNetworkId);
   }, [selectedNetworkId, layersData]);
 
-  // ---------- линия врезки из ответа бэкенда ----------
+  // ---------- варианты трассы A* (День 8) ----------
   useEffect(() => {
     const { scene, sampler } = stateRef.current;
     if (!scene) return;
-    const old = scene.getObjectByName('connection');
+    const old = scene.getObjectByName('routes');
     if (old) scene.remove(old);
-    if (connection) scene.add(buildConnectionLine(connection, sampler));
-  }, [connection]);
+    if (routes && routes.length) {
+      scene.add(buildRoutes(routes, selectedRouteKey, sampler));
+    }
+  }, [routes, selectedRouteKey, meshData]);
 
   // ---------- обработка кликов (День 5) ----------
   useEffect(() => {
@@ -169,12 +190,19 @@ export default function MapScene({
           // Координаты сцены -> координаты карты (x, y): инверсия mapToScene.
           onTerrainClick([hit.point.x, -hit.point.z]);
         }
+      } else {
+        // Режим обзора: клик по трубе варианта — выбрать этот вариант.
+        const group = scene.getObjectByName('routes');
+        if (!group || !onRouteClick) return;
+        const hits = raycaster.intersectObjects(group.children, false);
+        const hit = hits.find((h) => h.object.userData.type === 'route');
+        if (hit) onRouteClick(hit.object.userData.key);
       }
     };
 
     renderer.domElement.addEventListener('click', onClick);
     return () => renderer.domElement.removeEventListener('click', onClick);
-  }, [mode, onTerrainClick, onNetworkClick, floors, buildingSize]);
+  }, [mode, onTerrainClick, onNetworkClick, onRouteClick, floors, buildingSize]);
 
   return <div ref={mountRef} className="scene-mount" />;
 }

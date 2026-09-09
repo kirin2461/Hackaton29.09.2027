@@ -1,10 +1,16 @@
-// Панель инструментов (День 5 — интерфейс «Точка посадки»).
-// Три режима: обзор, добавление здания (Точка Б), выбор теплосети (Точка А).
+// Панель инструментов.
+// День 5 — интерфейс «Точка посадки»; Спринт 2 — варианты трассы A*,
+// бегунки штрафов (штраф за поворот / проход по дорогам).
 
 export default function Toolbar({
   mode, setMode, floors, setFloors, buildingSize, setBuildingSize,
-  networks, selectedNetworkId, result, error, onReset, backendOk,
+  networks, selectedNetworkId, onPickNetwork, routeData, routing,
+  selectedRouteKey, onSelectRoute,
+  turnPenalty, setTurnPenalty, roadMult, setRoadMult,
+  error, onReset, backendOk,
 }) {
+  const variants = routeData?.variants ?? [];
+
   return (
     <aside className="toolbar">
       <h1>Теплосети 3D</h1>
@@ -61,7 +67,7 @@ export default function Toolbar({
               <li
                 key={n.id}
                 className={n.id === selectedNetworkId ? 'selected' : ''}
-                onClick={() => {}}
+                onClick={() => onPickNetwork(n.id)}
               >
                 {n.properties?.name || n.id}
               </li>
@@ -70,12 +76,56 @@ export default function Toolbar({
         </div>
       )}
 
-      {result && (
+      {routing && <p className="status">Расчёт трассы…</p>}
+
+      {variants.length > 0 && (
+        <div className="group">
+          <h2>Варианты трассы (A*)</h2>
+          {variants.map((v) => (
+            <div
+              key={v.key}
+              className={`variant ${v.key === selectedRouteKey ? 'selected' : ''}`}
+              onClick={() => onSelectRoute(v.key)}
+            >
+              <span className="swatch" style={{ background: v.color }} />
+              <div className="variant-body">
+                <b>{v.name}</b>
+                <small>
+                  {v.length_m} м · поворотов: {v.turns}
+                </small>
+              </div>
+            </div>
+          ))}
+          <p className="hint">Клик по варианту или по трубе на карте — выбрать.</p>
+        </div>
+      )}
+
+      {variants.length > 0 && (
+        <div className="group">
+          <h2>Подгонка трассы</h2>
+          <label>
+            Штраф за поворот: {turnPenalty} м/45°
+            <input
+              type="range" min="0" max="10" step="0.5" value={turnPenalty}
+              onChange={(e) => setTurnPenalty(Number(e.target.value))}
+            />
+          </label>
+          <label>
+            Проход по дорогам: ×{roadMult}
+            <input
+              type="range" min="1" max="20" step="1" value={roadMult}
+              onChange={(e) => setRoadMult(Number(e.target.value))}
+            />
+          </label>
+        </div>
+      )}
+
+      {routeData?.building && (
         <div className="group result">
-          <h2>Расчёт врезки</h2>
-          <p>Площадь: {result.building.area_m2} м²</p>
-          <p>Нагрузка: {result.building.heat_load_kw} кВт</p>
-          <p>Длина подключения: {result.connection.length_m} м</p>
+          <h2>Расчёт подключения</h2>
+          <p>Площадь: {routeData.building.area_m2} м²</p>
+          <p>Нагрузка: {routeData.building.heat_load_kw} кВт</p>
+          <p>По прямой до сети: {routeData.connection.length_m} м</p>
         </div>
       )}
 

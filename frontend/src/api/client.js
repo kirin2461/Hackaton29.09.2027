@@ -39,3 +39,24 @@ export const postConnect = (polygon, floors, networkId) =>
       network_id: networkId,
     }),
   });
+
+/**
+ * Автотрассировка A* (Спринт 2, дни 6–10):
+ * три варианта маршрута от теплосети (Точка А) до здания (Точка Б).
+ * @param {number[][]} polygon контур нового здания
+ * @param {number} floors этажность
+ * @param {string} networkId id теплосети
+ * @param {number} turnPenalty штраф за поворот 45° (бегунок, усл. метры)
+ * @param {number} roadMultiplier множитель стоимости пути по дороге (бегунок)
+ */
+export const postRoute = (polygon, floors, networkId, turnPenalty, roadMultiplier) =>
+  request('/api/route/compute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      building: { polygon, floors, name: 'Новое здание' },
+      network_id: networkId,
+      turn_penalty: turnPenalty,
+      road_multiplier: roadMultiplier,
+    }),
+  });

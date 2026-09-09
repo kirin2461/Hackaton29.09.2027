@@ -24,17 +24,19 @@ export function buildTerrainMesh(meshData) {
   geometry.setIndex(faces);
   geometry.computeVertexNormals();
 
-  // Цвет по высоте: низины — зелёные, вершины — серо-бурые.
+  // Цвет по высоте: низины — насыщенно-зелёные, вершины — серо-бурые.
   geometry.computeBoundingBox();
   const { min, max } = geometry.boundingBox;
   const colors = new Float32Array(vertices.length);
-  const low = new THREE.Color(0x6ab04c);
-  const high = new THREE.Color(0xbdc3c7);
+  const low = new THREE.Color(0x4e9a51);
+  const mid = new THREE.Color(0x8fb573);
+  const high = new THREE.Color(0xa89f91);
   const tmp = new THREE.Color();
   const posAttr = geometry.getAttribute('position');
   for (let i = 0; i < posAttr.count; i++) {
     const t = (posAttr.getY(i) - min.y) / Math.max(1e-6, max.y - min.y);
-    tmp.lerpColors(low, high, t);
+    if (t < 0.5) tmp.lerpColors(low, mid, t * 2);
+    else tmp.lerpColors(mid, high, (t - 0.5) * 2);
     colors[i * 3] = tmp.r;
     colors[i * 3 + 1] = tmp.g;
     colors[i * 3 + 2] = tmp.b;
@@ -46,6 +48,7 @@ export function buildTerrainMesh(meshData) {
     flatShading: true, // ключевой флаг «low-poly» вида — грани не сглаживаются
   });
   const mesh = new THREE.Mesh(geometry, material);
+  mesh.receiveShadow = true; // рельеф принимает тени от зданий и деревьев
   mesh.name = 'terrain';
   return mesh;
 }

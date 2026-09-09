@@ -70,3 +70,35 @@ input[type='range'] { width: 100%; }
 
 .result p { margin: 4px 0; font-size: 13px; }
 .error { color: #ff7675; font-size: 13px; }
+
+/* --- варианты трассы (Спринт 2) --- */
+.variant {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  border: 1px solid #2f4468;
+  border-radius: 8px;
+  background: #22314d;
+  cursor: pointer;
+}
+.variant:hover { background: #2a3d5f; }
+.variant.selected { border-color: #74b9ff; background: #26436b; }
+.variant .swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex: none;
+}
+.variant .variant-body { display: flex; flex-direction: column; }
+.variant small { color: #9fb3d1; }
+
+.hint { font-size: 12px; color: #9fb3d1; }
+.error { color: #ff7675; font-size: 13px; }
+.network-list { list-style: none; padding: 0; margin: 6px 0; font-size: 13px; }
+.network-list li { padding: 5px 8px; border-radius: 6px; }
+.network-list li.selected { background: #26436b; color: #fdcb6e; }
+
+label { display: block; margin: 8px 0; font-size: 13px; }
+input[type="range"] { width: 100%; }

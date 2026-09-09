@@ -9,6 +9,7 @@ from functools import lru_cache
 
 from .config import DATA_DIR
 from .gis.parser import GISParser
+from .routing.planner import RoutePlanner
 
 
 @lru_cache
@@ -19,3 +20,17 @@ def get_parser() -> GISParser:
     один раз за время жизни процесса, а не на каждый запрос.
     """
     return GISParser(DATA_DIR)
+
+
+@lru_cache
+def get_planner() -> RoutePlanner:
+    """Единый весовой граф карты (День 6) на всё приложение.
+
+    Строится из нормализованных слоёв парсера (те же координаты,
+    что уходит на фронтенд в /api/map/layers). Растеризация слоёв
+    в сетку делается один раз, дальше каждый запрос — только A*.
+    """
+    parser = get_parser()
+    response = parser.to_response()
+    bounds = response["bounds"] or [0.0, 0.0, 1000.0, 1000.0]
+    return RoutePlanner(response["layers"], bounds)

@@ -8,7 +8,7 @@ export default function Toolbar({
   networks, selectedNetworkId, onPickNetwork, routeData, routing,
   selectedRouteKey, onSelectRoute,
   turnPenalty, setTurnPenalty, roadMult, setRoadMult,
-  validation, savedId, onStartEdit, onFinishEdit, onSave, onExport,
+  validation, netStats, savedId, onStartEdit, onFinishEdit, onSave, onExport,
   error, onReset, onDemo, backendOk,
 }) {
   const variants = routeData?.variants ?? [];
@@ -145,6 +145,36 @@ export default function Toolbar({
             <p className="error">
               ⚠ Трасса пересекает здания: {validation.collision_buildings.join(', ')}
             </p>
+          )}
+        </div>
+      )}
+
+      {(netStats || validation?.network) && (
+        <div className="group result">
+          <h2>Живучесть сети</h2>
+          {netStats && (
+            <>
+              <p>Сегментов: {netStats.edges}, узлов: {netStats.nodes}</p>
+              <p>Равномерность (энтропия): {netStats.entropy_norm}</p>
+              <p>Связность (Фидлер): {netStats.fiedler.toExponential(2)}</p>
+              <p>Кольца: {netStats.loops} · тупиков: {netStats.dead_ends}</p>
+            </>
+          )}
+          {validation?.network && (
+            <>
+              <p className="impact">
+                После врезки: энтропия {validation.network.after.entropy_norm}{' '}
+                ({validation.network.delta.entropy_norm >= 0 ? '+' : ''}
+                {(validation.network.delta.entropy_norm * 100).toFixed(2)} п.п.)
+              </p>
+              <p className="impact">
+                Фидлер: {validation.network.after.fiedler.toExponential(2)}{' '}
+                ({validation.network.delta.fiedler >= 0 ? '+' : '−'}
+                {netStats && netStats.fiedler > 0
+                  ? Math.abs(validation.network.delta.fiedler / netStats.fiedler * 100).toFixed(1)
+                  : '—'}%)
+              </p>
+            </>
           )}
         </div>
       )}

@@ -18,6 +18,9 @@ async function request(path, options) {
 /** Проверка живости бэкенда. */
 export const fetchHealth = () => request('/api/health');
 
+/** Метрики живучести существующей теплосети (энтропия, Фидлер, кольца). */
+export const fetchNetworkStats = () => request('/api/map/network/stats');
+
 /** Слои карты: здания, дороги, теплосети (День 2). */
 export const fetchLayers = () => request('/api/map/layers');
 

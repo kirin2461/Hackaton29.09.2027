@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import MapScene from './scene/MapScene.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import {
-  fetchHealth, fetchLayers, fetchTerrainMesh,
+  fetchHealth, fetchLayers, fetchTerrainMesh, fetchNetworkStats,
   postRoute, postValidate, postSave,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
@@ -20,6 +20,7 @@ export default function App() {
   const [backendOk, setBackendOk] = useState(null); // null — проверка идёт
   const [layersData, setLayersData] = useState(null);
   const [meshData, setMeshData] = useState(null);
+  const [netStats, setNetStats] = useState(null); // метрики живучести сети
 
   // Состояние интерфейса «Точка посадки» (День 5).
   const [mode, setMode] = useState('view'); // view | addBuilding | selectNetwork | editRoute
@@ -55,6 +56,10 @@ export default function App() {
         setMeshData(mesh);
       })
       .catch((e) => setError(`Не удалось загрузить карту: ${e.message}`));
+
+    fetchNetworkStats()
+      .then(setNetStats)
+      .catch(() => setNetStats(null)); // метрики опциональны
   }, []);
 
   // ---------- валидация трассы (День 12-13) ----------
@@ -265,6 +270,7 @@ export default function App() {
         roadMult={roadMult}
         setRoadMult={setRoadMult}
         validation={validation}
+        netStats={netStats}
         savedId={savedId}
         onStartEdit={handleStartEdit}
         onFinishEdit={handleFinishEdit}

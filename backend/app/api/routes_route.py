@@ -17,6 +17,7 @@ from shapely.geometry import Polygon
 from ..deps import get_normalized_layers, get_parser, get_planner
 from ..gis.parser import LAYER_HEAT, GISParser
 from ..routing.estimate import validate_path
+from ..routing.netstats import impact as network_impact
 from ..routing.planner import (
     DEFAULT_ROAD_MULTIPLIER,
     DEFAULT_TURN_PENALTY,
@@ -84,6 +85,13 @@ def compute_route(req: RouteRequest,
     }
     result["network_id"] = req.network_id
 
+    # Δ-импакт каждого варианта на живучесть сети (энтропия,
+    # кольцевание, число Фидлера) — помогает выбрать не только
+    # самую дешёвую, но и самую «безболезненную» для сети врезку.
+    heat_lines = [f["coordinates"] for f in layers.get(LAYER_HEAT, [])]
+    for v in result.get("variants", []):
+        v["network_impact"] = network_impact(heat_lines, v["path"])
+
     # Проверка размещения: новое здание не должно пересекаться
     # со существующей застройкой. Трасса всё равно считается,
     # но фронтенд покажет предупреждение.
@@ -115,8 +123,13 @@ class ValidateRequest(BaseModel):
 @router.post("/validate")
 def validate_route(req: ValidateRequest,
                    layers: dict = Depends(get_normalized_layers)):
-    """Валидация трассы: коллизии, переходы под дорогами, смета."""
+    """Валидация трассы: коллизии, переходы под дорогами, смета
+    и Δ-импакт ветки на живучесть теплосети (пересчитывается при
+    каждом перетаскивании узла gizmo'м)."""
     try:
-        return validate_path(req.path, layers)
+        result = validate_path(req.path, layers)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    heat_lines = [f["coordinates"] for f in layers.get(LAYER_HEAT, [])]
+    result["network"] = network_impact(heat_lines, req.path)
+    return result

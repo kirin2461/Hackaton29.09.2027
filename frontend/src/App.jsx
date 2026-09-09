@@ -1,5 +1,9 @@
-// Корневой компонент приложения (День 1 — связка, День 5 — логика точек).
-// Держит всё состояние проекта и связывает панель инструментов с 3D-сценой.
+// Корневой компонент приложения (Дни 1 и 5).
+// Держит всё состояние проекта и связывает панель Toolbar с 3D-сценой:
+//   - при старте проверяет backend и тянет слои карты + меш рельефа;
+//   - режим «addBuilding»: клик по рельефу ставит Точку Б (новое здание);
+//   - режим «selectNetwork»: клик по теплосети выбирает Точку А,
+//     после чего уходит POST /api/project/connect на расчёт врезки.
 
 import { useCallback, useEffect, useState } from 'react';
 import MapScene from './scene/MapScene.jsx';
@@ -8,94 +12,103 @@ import { fetchHealth, fetchLayers, fetchTerrainMesh, postConnect } from './api/c
 
 export default function App() {
   // Данные с бэкенда.
-  const [backendOk, setBackendOk] = useState(null);
-  const [meshData, setMeshData] = useState(null);   // рельеф (День 3)
-  const [layersData, setLayersData] = useState(null); // слои (День 2)
+  const [backendOk, setBackendOk] = useState(null); // null — проверка идёт
+  const [layersData, setLayersData] = useState(null);
+  const [meshData, setMeshData] = useState(null);
 
-  // Состояние «Точки посадки» (День 5).
+  // Состояние интерфейса «Точка посадки» (День 5).
   const [mode, setMode] = useState('view'); // view | addBuilding | selectNetwork
   const [floors, setFloors] = useState(5);
-  const [buildingSize, setBuildingSize] = useState(40);
-  const [newBuilding, setNewBuilding] = useState(null); // Точка Б
-  const [selectedNetworkId, setSelectedNetworkId] = useState(null); // Точка А
-  const [connection, setConnection] = useState(null); // линия врезки
+  const [buildingSize, setBuildingSize] = useState(30);
+  const [newBuilding, setNewBuilding] = useState(null); // {polygon, floors, center}
+  const [selectedNetworkId, setSelectedNetworkId] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
-  // Первичная загрузка: health-check, затем слои и рельеф.
+  // ---------- загрузка данных при старте ----------
   useEffect(() => {
     fetchHealth()
       .then(() => setBackendOk(true))
       .catch(() => setBackendOk(false));
-    fetchTerrainMesh().then(setMeshData).catch((e) => setError(String(e)));
-    fetchLayers().then(setLayersData).catch((e) => setError(String(e)));
+
+    Promise.all([fetchLayers(), fetchTerrainMesh()])
+      .then(([layers, mesh]) => {
+        setLayersData(layers);
+        setMeshData(mesh);
+      })
+      .catch((e) => setError(`Не удалось загрузить карту: ${e.message}`));
   }, []);
 
-  // Клик по рельефу в режиме добавления: ставим квадратное здание (Точка Б).
+  // ---------- клик по рельефу: ставим Точку Б ----------
   const handleTerrainClick = useCallback(
     ([x, y]) => {
-      const half = buildingSize / 2;
+      // Новое здание — квадрат со стороной buildingSize, центр в точке клика.
+      const h = buildingSize / 2;
       const polygon = [
-        [x - half, y - half],
-        [x + half, y - half],
-        [x + half, y + half],
-        [x - half, y + half],
-        [x - half, y - half], // кольцо замыкаем
+        [x - h, y - h],
+        [x + h, y - h],
+        [x + h, y + h],
+        [x - h, y + h],
       ];
-      setNewBuilding({ polygon, center: [x, y], floors });
-      setConnection(null);
-      setResult(null);
+      setNewBuilding({ polygon, floors, center: [x, y] });
+      setResult(null); // старый расчёт больше не актуален
       setError(null);
+      setMode('selectNetwork'); // следующий шаг — выбрать Точку А
     },
     [buildingSize, floors],
   );
 
-  // Клик по теплосети (Точка А): запоминаем и, если есть Точка Б, считаем врезку.
+  // ---------- клик по теплосети: выбираем Точку А и считаем врезку ----------
   const handleNetworkClick = useCallback(
-    (id) => {
-      setSelectedNetworkId(id);
+    (networkId) => {
+      setSelectedNetworkId(networkId);
       setError(null);
-      if (!newBuilding) {
-        setError('Сначала добавьте новое здание (Точка Б).');
-        return;
-      }
-      postConnect(newBuilding.polygon, newBuilding.floors, id)
-        .then((res) => {
-          setConnection(res.connection);
-          setResult(res);
-        })
-        .catch((e) => setError(String(e)));
+      if (!newBuilding) return; // сначала нужна Точка Б
+      postConnect(newBuilding.polygon, newBuilding.floors, networkId)
+        .then(setResult)
+        .catch((e) => setError(e.message));
     },
     [newBuilding],
   );
 
-  // Полный сброс проекта.
+  // ---------- сброс проекта ----------
   const handleReset = useCallback(() => {
     setNewBuilding(null);
     setSelectedNetworkId(null);
-    setConnection(null);
     setResult(null);
     setError(null);
     setMode('view');
   }, []);
 
+  const networks = layersData?.layers?.heat_networks ?? [];
+
   return (
     <div className="app">
       <Toolbar
-        mode={mode} setMode={setMode}
-        floors={floors} setFloors={setFloors}
-        buildingSize={buildingSize} setBuildingSize={setBuildingSize}
-        networks={layersData?.layers?.heat_networks ?? []}
+        mode={mode}
+        setMode={setMode}
+        floors={floors}
+        setFloors={setFloors}
+        buildingSize={buildingSize}
+        setBuildingSize={setBuildingSize}
+        networks={networks}
         selectedNetworkId={selectedNetworkId}
-        result={result} error={error} backendOk={backendOk}
+        result={result}
+        error={error}
         onReset={handleReset}
+        backendOk={backendOk}
       />
       <MapScene
-        meshData={meshData} layersData={layersData}
-        mode={mode} floors={floors} buildingSize={buildingSize}
-        newBuilding={newBuilding} selectedNetworkId={selectedNetworkId}
-        connection={connection}
-        onTerrainClick={handleTerrainClick} onNetworkClick={handleNetworkClick}
+        meshData={meshData}
+        layersData={layersData}
+        mode={mode}
+        floors={floors}
+        buildingSize={buildingSize}
+        newBuilding={newBuilding}
+        selectedNetworkId={selectedNetworkId}
+        connection={result?.connection ?? null}
+        onTerrainClick={handleTerrainClick}
+        onNetworkClick={handleNetworkClick}
       />
     </div>
   );

@@ -11,3 +11,4 @@ dist/
 # ОС и редакторы
 .DS_Store
 *.log
+backend/app/data/projects/

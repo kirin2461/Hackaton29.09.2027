@@ -1,5 +1,6 @@
 // Панель инструментов.
 import { useState } from 'react';
+import ParetoChart from './ParetoChart.jsx';
 // Спринт 2 — варианты трассы A*, бегунки штрафов.
 // Спринт 3 — смета/гидравлика, редактирование трубы, сохранение.
 // Спринт 4 — экспорт сцены в .glb.
@@ -16,6 +17,7 @@ export default function Toolbar({
   presets, districtLoading, onLoadDistrict,
   lidarStatus, lidarBusy, showCloud, setShowCloud,
   onLidarDemo, onLidarUpload, onLidarClear,
+  paretoData, paretoBusy, onPareto, pdfBusy, onReportPdf,
 }) {
   // Локальные поля произвольного bbox (градусы WGS84).
   const [bbox, setBbox] = useState({ min_lat: '', min_lon: '', max_lat: '', max_lon: '' });
@@ -171,6 +173,29 @@ export default function Toolbar({
         </div>
       )}
 
+      {variants.length > 0 && mode !== 'editRoute' && (
+        <div className="group">
+          <h2>Парето: цена vs надёжность</h2>
+          <button onClick={onPareto} disabled={paretoBusy}>
+            {paretoBusy ? '⏳ Сканирую пространство весов…' : '⚖ Построить Парето-фронт'}
+          </button>
+          {paretoData && (
+            <>
+              <ParetoChart
+                data={paretoData}
+                selectedKey={selectedRouteKey}
+                onSelect={onSelectRoute}
+              />
+              <p className="hint">
+                Фиолетовые точки — недоминируемые варианты (фронт):
+                дешевле — значит менее надёжно, и наоборот.
+                Клик по точке выбирает трассу.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
       {validation && (
         <div className="group result">
           <h2>Смета и гидравлика</h2>
@@ -263,6 +288,9 @@ export default function Toolbar({
             💾 Сохранить проект
           </button>
           <button onClick={onExport}>⤓ Экспорт сцены (.glb)</button>
+          <button onClick={onReportPdf} disabled={pdfBusy}>
+            {pdfBusy ? '⏳ Собираю PDF…' : '📄 PDF-отчёт'}
+          </button>
           {savedId && <p className="status ok">Сохранено: {savedId}</p>}
         </div>
       )}

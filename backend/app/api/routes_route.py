@@ -19,6 +19,7 @@ from ..gis.parser import LAYER_HEAT, GISParser
 from ..routing.estimate import validate_path
 from ..routing.netstats import impact as network_impact
 from ..routing.netstats import reliability as network_reliability
+from ..routing.pareto import build_pareto
 from ..routing.sitescan import scan_sites
 from ..routing.planner import (
     DEFAULT_ROAD_MULTIPLIER,
@@ -192,4 +193,37 @@ def scan_route(req: ScanRequest,
     # Живучесть базовой сети — чтобы фронт показал «до» рядом с Δ.
     heat_lines = [f["coordinates"] for f in heat_feats]
     result["reliability_before"] = network_reliability(heat_lines)
+    return result
+
+
+@router.post("/pareto")
+def pareto_route(req: RouteRequest,
+                 parser: GISParser = Depends(get_parser),
+                 planner: RoutePlanner = Depends(get_planner),
+                 layers: dict = Depends(get_normalized_layers)):
+    """Парето-фронт «цена ↔ надёжность»: сканирует пространство весов
+    A* (штраф поворотов × множитель дорог), собирает все различные
+    трассы и помечает недоминируемые (is_pareto=true).
+
+    Точку фронта можно выбрать в UI — её path подставляется как
+    вариант трассы и дальше работает весь контур (валидация,
+    gizmo-правка, сохранение, PDF-отчёт).
+    """
+    if len(req.building.polygon) < 3:
+        raise HTTPException(400, "Контуру здания нужно минимум 3 точки")
+    features = parser.layer_to_features(LAYER_HEAT)
+    target = next((f for f in features if f["id"] == req.network_id), None)
+    if target is None:
+        raise HTTPException(404, f"Теплосеть '{req.network_id}' не найдена")
+
+    raw_bounds = parser._bounds()
+    ox, oy = (raw_bounds[0], raw_bounds[1]) if raw_bounds else (0.0, 0.0)
+    network_coords = [(x - ox, y - oy) for x, y in target["coordinates"]]
+
+    try:
+        result = build_pareto(layers, planner, network_coords,
+                              req.building.polygon)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    result["network_id"] = req.network_id
     return result

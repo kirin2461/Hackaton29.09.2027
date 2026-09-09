@@ -12,6 +12,7 @@ import {
   fetchHealth, fetchLayers, fetchTerrainMesh, fetchNetworkStats,
   fetchPresets, postRoute, postValidate, postSave, postScan, postLoadBbox,
   fetchLidarStatus, postLidarDemo, postLidarClear, postLidarUpload,
+  postPareto, postReportPdf,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
 import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
@@ -55,6 +56,11 @@ export default function App() {
   // Загрузка произвольного района из OSM.
   const [presets, setPresets] = useState([]);
   const [districtLoading, setDistrictLoading] = useState(false);
+
+  // Парето-анализ «цена ↔ надёжность».
+  const [paretoData, setParetoData] = useState(null);
+  const [paretoBusy, setParetoBusy] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   // Лидарный рельеф (LAS/LAZ) и облако точек.
   const [lidarStatus, setLidarStatus] = useState(null);
@@ -103,6 +109,7 @@ export default function App() {
       .then((data) => {
         setRouteData(data);
         setSavedId(null);
+        setParetoData(null); // веса изменились — старый фронт неактуален
         if (!data.variants.some((v) => v.key === selectedRouteKey)) {
           setSelectedRouteKey(data.variants[0]?.key ?? null);
         }
@@ -222,6 +229,7 @@ export default function App() {
     setSavedId(null);
     setError(null);
     setMode('view');
+    setParetoData(null);
   }, []);
 
   // ---------- демо-сценарий в один клик (для показа жюри) ----------
@@ -350,6 +358,58 @@ export default function App() {
     applyLidar(postLidarClear());
   }, [applyLidar]);
 
+  // ---------- парето-анализ ----------
+  // Точки фронта подмешиваются в список вариантов фиолетовым —
+  // дальше работает весь контур (3D, валидация, gizmo, сохранение).
+  const handlePareto = useCallback(() => {
+    if (!newBuilding || !selectedNetworkId) return;
+    setParetoBusy(true);
+    setError(null);
+    postPareto(newBuilding.polygon, newBuilding.floors, selectedNetworkId)
+      .then((data) => {
+        setParetoData(data);
+        setRouteData((prev) => {
+          if (!prev) return prev;
+          const existing = new Set(prev.variants.map((v) => v.key));
+          const extra = data.points
+            .filter((pt) => !existing.has(pt.key))
+            .map((pt) => ({
+              key: pt.key,
+              name: `Парето ${pt.key.split('_')[1]}`,
+              color: pt.is_pareto ? '#a55eea' : '#b2bec3',
+              path: pt.path,
+              length_m: pt.length_m,
+              turns: pt.turns,
+              params: pt.params,
+            }));
+          return { ...prev, variants: [...prev.variants, ...extra] };
+        });
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setParetoBusy(false));
+  }, [newBuilding, selectedNetworkId]);
+
+  // ---------- PDF-отчёт ----------
+  const handleReportPdf = useCallback(() => {
+    const path = currentPath();
+    if (!path || !newBuilding || !selectedNetworkId) return;
+    setPdfBusy(true);
+    const variant = mode === 'editRoute' ? 'custom' : selectedRouteKey;
+    postReportPdf(newBuilding.polygon, newBuilding.floors,
+                  selectedNetworkId, path, variant)
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'heat_connection_report.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setPdfBusy(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, editPath, routeData, selectedRouteKey, newBuilding, selectedNetworkId]);
+
   const networks = layersData?.layers?.heat_networks ?? [];
 
   return (
@@ -392,6 +452,11 @@ export default function App() {
         presets={presets}
         districtLoading={districtLoading}
         onLoadDistrict={handleLoadDistrict}
+        paretoData={paretoData}
+        paretoBusy={paretoBusy}
+        onPareto={handlePareto}
+        pdfBusy={pdfBusy}
+        onReportPdf={handleReportPdf}
         lidarStatus={lidarStatus}
         lidarBusy={lidarBusy}
         showCloud={showCloud}

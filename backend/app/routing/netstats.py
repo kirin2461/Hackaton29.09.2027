@@ -254,13 +254,15 @@ def reliability(network_lines: list[list[list[float]]],
 
     # Монте-Карло множественных отказов (фиксированный seed —
     # результаты воспроизводимы между запросами)
-    rng = np.random.default_rng(2027)
-    mc = 0.0
-    for _ in range(mc_trials):
-        skip = {i for i in range(m) if rng.random() < fail_prob}
-        if skip:
-            mc += _unserved_share(n, edges, skip)
-    mc_pct = mc / mc_trials * 100
+    mc_pct = 0.0
+    if mc_trials > 0:
+        rng = np.random.default_rng(2027)
+        mc = 0.0
+        for _ in range(mc_trials):
+            skip = {i for i in range(m) if rng.random() < fail_prob}
+            if skip:
+                mc += _unserved_share(n, edges, skip)
+        mc_pct = mc / mc_trials * 100
 
     return {
         "n1_worst_pct": round(n1_worst, 2),

@@ -9,3 +9,5 @@ pydantic==2.10.4
 laspy==2.5.4
 lazrs==0.6.0
 python-multipart==0.0.20
+fpdf2==2.8.2
+matplotlib==3.10.0

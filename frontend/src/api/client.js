@@ -140,3 +140,37 @@ export const postLidarUpload = (file) => {
   form.append('file', file);
   return request('/api/terrain/lidar/upload', { method: 'POST', body: form });
 };
+
+/**
+ * Парето-анализ: сканирует пространство весов A* и возвращает
+ * все различные трассы с меткой is_pareto (недоминируемые).
+ */
+export const postPareto = (polygon, floors, networkId) =>
+  request('/api/route/pareto', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      building: { polygon, floors, name: 'Новое здание' },
+      network_id: networkId,
+    }),
+  });
+
+/** PDF-отчёт по текущему проекту — скачивается как файл. */
+export const postReportPdf = async (polygon, floors, networkId, path, variant) => {
+  const res = await fetch('/api/report/pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      building: { polygon, floors, name: 'Новое здание' },
+      network_id: networkId,
+      path,
+      variant,
+    }),
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.blob();
+};

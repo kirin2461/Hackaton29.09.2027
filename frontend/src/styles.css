@@ -159,3 +159,15 @@ button.save:disabled { opacity: 0.45; cursor: not-allowed; }
   margin-right: 6px;
   cursor: pointer;
 }
+
+
+/* --- Парето-график --- */
+.pareto-chart { width: 100%; margin-top: 8px; background: #16213a; border-radius: 8px; }
+.pareto-chart .axis { stroke: #3a4f74; stroke-width: 1; }
+.pareto-chart .axis-label { fill: #9fb3d1; font-size: 9.5px; }
+.pareto-chart .pareto-front { fill: none; stroke: #a55eea; stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.8; }
+.pareto-chart .pareto-dot { cursor: pointer; stroke-width: 1.5px; }
+.pareto-chart .pareto-dot.dominated { fill: #7180a0; stroke: #16213a; }
+.pareto-chart .pareto-dot.front { fill: #a55eea; stroke: #ffd166; }
+.pareto-chart .pareto-dot.selected { stroke: #fff; stroke-width: 2.5px; }
+.pareto-chart .pareto-dot:hover { stroke: #fff; }

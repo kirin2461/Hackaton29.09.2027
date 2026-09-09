@@ -34,3 +34,14 @@ def get_planner() -> RoutePlanner:
     response = parser.to_response()
     bounds = response["bounds"] or [0.0, 0.0, 1000.0, 1000.0]
     return RoutePlanner(response["layers"], bounds)
+
+
+@lru_cache
+def get_normalized_layers() -> dict:
+    """Слои карты в нормализованных координатах (как у фронтенда).
+
+    Нужны валидатору трассы (Дни 12–14): коллизии и переходы
+    считаются в той же системе координат, в которой фронтенд
+    показывает сцену.
+    """
+    return get_parser().to_response()["layers"]

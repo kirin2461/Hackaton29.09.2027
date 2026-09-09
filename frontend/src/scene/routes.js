@@ -10,7 +10,7 @@ const RADIUS_SELECTED = 2.4;
 const RADIUS_IDLE = 1.4;
 
 /** Один вариант трассы -> THREE.Mesh трубы. */
-function buildPipe(variant, selected, sampler) {
+export function buildPipe(variant, selected, sampler) {
   const pts = variant.path.map(([x, y]) => {
     const ground = sampler ? sampler(x, y) : 0;
     return mapToScene(x, y, ground + PIPE_LIFT);

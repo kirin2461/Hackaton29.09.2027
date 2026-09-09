@@ -1,16 +1,18 @@
-// Корневой компонент приложения (Дни 1, 5 и Спринт 2).
-// Держит всё состояние проекта и связывает панель Toolbar с 3D-сценой:
-//   - при старте проверяет backend и тянет слои карты + меш рельефа;
-//   - режим «addBuilding»: клик по рельефу ставит Точку Б (новое здание);
-//   - режим «selectNetwork»: клик по теплосети выбирает Точку А —
-//     после чего POST /api/route/compute считает ТРИ варианта трассы A*;
-//   - бегунки «Штраф за поворот» и «Проход по дорогам» перезапускают
-//     расчёт в реальном времени (дебаунс 300 мс).
+// Корневой компонент приложения.
+// Спринт 1: связка Toolbar ↔ 3D-сцена, Точка А/Б.
+// Спринт 2: A*-трассировка, 3 варианта, бегунки штрафов.
+// Спринт 3: gizmo-редактирование трубы, реактивная валидация,
+//           смета/гидравлика, блокировка сохранения при коллизии.
+// Спринт 4: экспорт сцены в .glb для Blender.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import MapScene from './scene/MapScene.jsx';
 import Toolbar from './components/Toolbar.jsx';
-import { fetchHealth, fetchLayers, fetchTerrainMesh, postRoute } from './api/client.js';
+import {
+  fetchHealth, fetchLayers, fetchTerrainMesh,
+  postRoute, postValidate, postSave,
+} from './api/client.js';
+import { exportSceneGLB } from './scene/exportGlb.js';
 
 export default function App() {
   // Данные с бэкенда.
@@ -19,7 +21,7 @@ export default function App() {
   const [meshData, setMeshData] = useState(null);
 
   // Состояние интерфейса «Точка посадки» (День 5).
-  const [mode, setMode] = useState('view'); // view | addBuilding | selectNetwork
+  const [mode, setMode] = useState('view'); // view | addBuilding | selectNetwork | editRoute
   const [floors, setFloors] = useState(5);
   const [buildingSize, setBuildingSize] = useState(30);
   const [newBuilding, setNewBuilding] = useState(null); // {polygon, floors, center}
@@ -33,6 +35,12 @@ export default function App() {
   const [roadMult, setRoadMult] = useState(4); // множитель стоимости дорог
   const [routing, setRouting] = useState(false); // идёт пересчёт
   const debounceRef = useRef(null);
+
+  // Редактирование и валидация трубы (Спринт 3).
+  const [editPath, setEditPath] = useState(null); // точки редактируемой трассы
+  const [validation, setValidation] = useState(null); // ответ /api/route/validate
+  const [savedId, setSavedId] = useState(null);
+  const validateRef = useRef(null);
 
   // ---------- загрузка данных при старте ----------
   useEffect(() => {
@@ -48,6 +56,14 @@ export default function App() {
       .catch((e) => setError(`Не удалось загрузить карту: ${e.message}`));
   }, []);
 
+  // ---------- валидация трассы (День 12-13) ----------
+  const runValidation = useCallback((path) => {
+    if (!path || path.length < 2) return;
+    postValidate(path)
+      .then(setValidation)
+      .catch(() => setValidation(null));
+  }, []);
+
   // ---------- запуск трассировки ----------
   const runRouting = useCallback((building, networkId, tp, rm) => {
     if (!building || !networkId) return;
@@ -55,7 +71,7 @@ export default function App() {
     postRoute(building.polygon, building.floors, networkId, tp, rm)
       .then((data) => {
         setRouteData(data);
-        // Если выбранный вариант исчез (путь не найден) — берём первый.
+        setSavedId(null);
         if (!data.variants.some((v) => v.key === selectedRouteKey)) {
           setSelectedRouteKey(data.variants[0]?.key ?? null);
         }
@@ -65,10 +81,16 @@ export default function App() {
       .finally(() => setRouting(false));
   }, [selectedRouteKey]);
 
+  // Смета для выбранного варианта (показывается сразу после A*).
+  useEffect(() => {
+    if (mode === 'editRoute') return; // при редактировании считаем editPath
+    const v = routeData?.variants?.find((x) => x.key === selectedRouteKey);
+    if (v) runValidation(v.path);
+  }, [routeData, selectedRouteKey, mode, runValidation]);
+
   // ---------- клик по рельефу: ставим Точку Б ----------
   const handleTerrainClick = useCallback(
     ([x, y]) => {
-      // Новое здание — квадрат со стороной buildingSize, центр в точке клика.
       const h = buildingSize / 2;
       const polygon = [
         [x - h, y - h],
@@ -78,24 +100,25 @@ export default function App() {
       ];
       const building = { polygon, floors, center: [x, y] };
       setNewBuilding(building);
-      setRouteData(null); // старые трассы больше не актуальны
+      setRouteData(null);
+      setValidation(null);
+      setSavedId(null);
       setError(null);
       if (selectedNetworkId) {
-        // Точка А уже выбрана — сразу пересчитываем трассу.
         runRouting(building, selectedNetworkId, turnPenalty, roadMult);
       } else {
-        setMode('selectNetwork'); // следующий шаг — выбрать Точку А
+        setMode('selectNetwork');
       }
     },
     [buildingSize, floors, selectedNetworkId, turnPenalty, roadMult, runRouting],
   );
 
-  // ---------- клик по теплосети: выбираем Точку А и считаем трассы ----------
+  // ---------- клик по теплосети: Точка А + трассы ----------
   const handleNetworkClick = useCallback(
     (networkId) => {
       setSelectedNetworkId(networkId);
       setError(null);
-      if (!newBuilding) return; // сначала нужна Точка Б
+      if (!newBuilding) return;
       runRouting(newBuilding, networkId, turnPenalty, roadMult);
       setMode('view');
     },
@@ -104,29 +127,95 @@ export default function App() {
 
   // ---------- бегунки: реактивный пересчёт с дебаунсом ----------
   useEffect(() => {
-    if (!newBuilding || !selectedNetworkId) return;
+    if (!newBuilding || !selectedNetworkId || mode === 'editRoute') return;
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(
       () => runRouting(newBuilding, selectedNetworkId, turnPenalty, roadMult),
       300,
     );
     return () => clearTimeout(debounceRef.current);
-    // runRouting намеренно не в зависимостях: пересчёт нужен только
-    // при изменении самих бегунков.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnPenalty, roadMult]);
 
-  // ---------- выбор варианта трассы (в списке или кликом по трубе) ----------
-  const handleSelectRoute = useCallback((key) => setSelectedRouteKey(key), []);
+  // ---------- выбор варианта трассы ----------
+  const handleSelectRoute = useCallback((key) => {
+    setMode('view'); // смена варианта завершает редактирование
+    setEditPath(null);
+    setSelectedRouteKey(key);
+    setSavedId(null);
+  }, []);
+
+  // ---------- редактирование трубы (День 11-12) ----------
+  const handleStartEdit = useCallback(() => {
+    const v = routeData?.variants?.find((x) => x.key === selectedRouteKey);
+    if (!v) return;
+    setEditPath(v.path.map((p) => [...p]));
+    setMode('editRoute');
+  }, [routeData, selectedRouteKey]);
+
+  const handleFinishEdit = useCallback(() => {
+    setMode('view');
+  }, []);
+
+  // Живой перетаскивание узла: обновляем путь, валидация с дебаунсом.
+  const handlePathChange = useCallback((path) => {
+    setEditPath(path);
+    setSavedId(null);
+    clearTimeout(validateRef.current);
+    validateRef.current = setTimeout(() => runValidation(path), 300);
+  }, [runValidation]);
+
+  // ---------- сохранение (День 14-15) ----------
+  const currentPath = () => {
+    if (mode === 'editRoute' && editPath) return editPath;
+    return routeData?.variants?.find((x) => x.key === selectedRouteKey)?.path ?? null;
+  };
+
+  const handleSave = useCallback(() => {
+    const path = currentPath();
+    if (!path || !newBuilding || !selectedNetworkId) return;
+    const variant = mode === 'editRoute' ? 'custom' : selectedRouteKey;
+    postSave(newBuilding.polygon, newBuilding.floors, selectedNetworkId, path, variant)
+      .then((r) => { setSavedId(r.project_id); setError(null); })
+      .catch((e) => setError(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, editPath, routeData, selectedRouteKey, newBuilding, selectedNetworkId]);
 
   // ---------- сброс проекта ----------
   const handleReset = useCallback(() => {
     setNewBuilding(null);
     setSelectedNetworkId(null);
     setRouteData(null);
+    setValidation(null);
+    setEditPath(null);
+    setSavedId(null);
     setError(null);
     setMode('view');
   }, []);
+
+  // ---------- демо-сценарий в один клик (для показа жюри) ----------
+  // Ставит 9-этажку на свободную площадку (300, 800) у дальнего края
+  // карты и строит трассы к теплосети h2: варианты заметно различаются,
+  // что наглядно показывает работу штрафов.
+  const handleDemo = useCallback(() => {
+    const cx = 300, cy = 800, h = 20;
+    const polygon = [
+      [cx - h, cy - h],
+      [cx + h, cy - h],
+      [cx + h, cy + h],
+      [cx - h, cy + h],
+    ];
+    const building = { polygon, floors: 9, center: [cx, cy] };
+    setNewBuilding(building);
+    setSelectedNetworkId('h2');
+    setRouteData(null);
+    setValidation(null);
+    setEditPath(null);
+    setSavedId(null);
+    setError(null);
+    setMode('view');
+    runRouting(building, 'h2', turnPenalty, roadMult);
+  }, [runRouting, turnPenalty, roadMult]);
 
   const networks = layersData?.layers?.heat_networks ?? [];
 
@@ -150,8 +239,15 @@ export default function App() {
         setTurnPenalty={setTurnPenalty}
         roadMult={roadMult}
         setRoadMult={setRoadMult}
+        validation={validation}
+        savedId={savedId}
+        onStartEdit={handleStartEdit}
+        onFinishEdit={handleFinishEdit}
+        onSave={handleSave}
+        onExport={() => exportSceneGLB()}
         error={error}
         onReset={handleReset}
+        onDemo={handleDemo}
         backendOk={backendOk}
       />
       <MapScene
@@ -164,9 +260,12 @@ export default function App() {
         selectedNetworkId={selectedNetworkId}
         routes={routeData?.variants ?? null}
         selectedRouteKey={selectedRouteKey}
+        editPath={editPath}
+        validation={validation}
         onTerrainClick={handleTerrainClick}
         onNetworkClick={handleNetworkClick}
         onRouteClick={handleSelectRoute}
+        onPathChange={handlePathChange}
       />
     </div>
   );

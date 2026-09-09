@@ -60,3 +60,31 @@ export const postRoute = (polygon, floors, networkId, turnPenalty, roadMultiplie
       road_multiplier: roadMultiplier,
     }),
   });
+
+/**
+ * Реактивная валидация трассы (День 12): коллизии, переходы, смета.
+ * Вызывается после A* и после каждого перетаскивания узла трубы.
+ * @param {number[][]} path точки трассы [[x, y], ...]
+ */
+export const postValidate = (path) =>
+  request('/api/route/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+
+/**
+ * Сохранение проекта (День 14-15). Бэкенд вернёт 409,
+ * если трасса пересекает здание.
+ */
+export const postSave = (polygon, floors, networkId, path, variant) =>
+  request('/api/project/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      building: { polygon, floors, name: 'Новое здание' },
+      network_id: networkId,
+      path,
+      variant,
+    }),
+  });

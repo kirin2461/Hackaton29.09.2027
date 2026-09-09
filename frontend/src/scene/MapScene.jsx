@@ -1,31 +1,41 @@
-// Главный React-компонент 3D-сцены (Дни 4-5).
-// Держит рендерер Three.js, камеру, свет, OrbitControls,
-// строит рельеф/здания/сети из данных API и обрабатывает клики
-// (расстановка Точки Б и выбор Точки А).
+// Главный React-компонент 3D-сцены.
+// Дни 4-5: рельеф/здания/сети, клики (Точка Б, Точка А).
+// День 8: трубы вариантов трассы.
+// День 11: TransformControls (gizmo) — перетаскивание узлов трубы.
+// День 12: при перетаскивании координаты уходят на валидацию (onPathChange).
+// День 14: коллизии — труба краснеет.
 
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { buildTerrainMesh, mapToScene, makeHeightSampler } from './terrain';
 import { buildBuilding, buildNewBuilding, buildMarker, drapeOnTerrain } from './buildings';
 import { buildRoads, buildHeatNetworks, highlightHeat } from './networks';
-import { buildRoutes } from './routes';
+import { buildRoutes, buildPipe } from './routes';
 import { buildTrees } from './trees';
+
+const PIPE_LIFT = 1.4; // как в networks.js
+const NODE_COLOR = 0xfdcb6e;      // перетаскиваемые узлы — оранжевые
+const NODE_END_COLOR = 0x9fb3d1;  // концевые узлы (врезка/здание) — серые
 
 export default function MapScene({
   meshData, layersData, mode, floors, buildingSize,
   newBuilding, selectedNetworkId, routes, selectedRouteKey,
-  onTerrainClick, onNetworkClick, onRouteClick,
+  editPath, validation,
+  onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
 }) {
   const mountRef = useRef(null);
   const stateRef = useRef({}); // «ручка» к живым объектам сцены между эффектами
+  const editPathRef = useRef(null); // редактируемая трасса (массив точек)
+  const cbRef = useRef({});
+  cbRef.current = { onTerrainClick, onNetworkClick, onRouteClick, onPathChange };
 
   // ---------- однократная инициализация сцены ----------
   useEffect(() => {
     const mount = mountRef.current;
     const scene = new THREE.Scene();
-    // Дневное небо + дымка на горизонте.
-    scene.background = new THREE.Color(0x87b5d9);
+    scene.background = new THREE.Color(0x87b5d9); // дневное небо
     scene.fog = new THREE.Fog(0x9db8d2, 1600, 4500);
 
     const camera = new THREE.PerspectiveCamera(
@@ -60,6 +70,31 @@ export default function MapScene({
     sun.shadow.bias = -0.0004;
     scene.add(sun);
 
+    // Gizmo (День 11): перетаскивание узлов трубы в плоскости карты.
+    const gizmo = new TransformControls(camera, renderer.domElement);
+    gizmo.setMode('translate');
+    gizmo.showY = false; // высота узла всегда «по рельефу»
+    const gizmoHelper = typeof gizmo.getHelper === 'function' ? gizmo.getHelper() : gizmo;
+    scene.add(gizmoHelper);
+    gizmo.addEventListener('dragging-changed', (e) => {
+      controls.enabled = !e.value; // пока тянем узел — орбита выключена
+    });
+    gizmo.addEventListener('objectChange', () => {
+      const node = gizmo.object;
+      const st = stateRef.current;
+      if (!node || node.userData.pathIdx === undefined || !editPathRef.current) return;
+      // Сцена -> карта: x = pos.x, y = -pos.z; высоту берём с рельефа.
+      const x = node.position.x;
+      const y = -node.position.z;
+      const ground = st.sampler ? st.sampler(x, y) : 0;
+      node.position.y = ground + PIPE_LIFT;
+      const path = editPathRef.current.map((p) => [...p]);
+      path[node.userData.pathIdx] = [x, y];
+      editPathRef.current = path;
+      rebuildEditedPipe(); // труба следует за узлом вживую
+      cbRef.current.onPathChange?.(path); // реактивная валидация (День 12)
+    });
+
     // Цикл отрисовки.
     let frameId;
     const animate = () => {
@@ -77,11 +112,15 @@ export default function MapScene({
     };
     window.addEventListener('resize', onResize);
 
-    stateRef.current = { scene, camera, renderer, controls };
+    stateRef.current = { scene, camera, renderer, controls, gizmo, gizmoHelper };
+    window.__scene = scene; // для экспорта GLB (День 16)
+    window.__gizmoHelper = gizmoHelper;
 
     return () => {
       cancelAnimationFrame(frameId);
       window.removeEventListener('resize', onResize);
+      gizmo.detach();
+      gizmo.dispose();
       mount.removeChild(renderer.domElement);
       renderer.dispose();
     };
@@ -99,11 +138,11 @@ export default function MapScene({
     stateRef.current.sampler = makeHeightSampler(terrain);
   }, [meshData]);
 
-  // ---------- слои карты: здания, дороги, теплосети (Дни 2 и 4) ----------
+  // ---------- слои карты: здания, дороги, теплосети, деревья ----------
   useEffect(() => {
     const { scene, sampler } = stateRef.current;
     if (!scene || !layersData || !sampler) return; // ждём рельеф
-    for (const name of ['buildings', 'roads', 'heat_networks']) {
+    for (const name of ['buildings', 'roads', 'heat_networks', 'trees']) {
       const old = scene.getObjectByName(name);
       if (old) scene.remove(old);
     }
@@ -117,9 +156,6 @@ export default function MapScene({
     scene.add(bGroup);
     scene.add(buildRoads(layersData.layers.roads, sampler));
     scene.add(buildHeatNetworks(layersData.layers.heat_networks, sampler));
-    // Деревья на пустырях — между зданиями, дорогами и теплосетями.
-    const oldTrees = scene.getObjectByName('trees');
-    if (oldTrees) scene.remove(oldTrees);
     scene.add(buildTrees(layersData, layersData.bounds, sampler));
   }, [layersData, meshData]);
 
@@ -157,13 +193,85 @@ export default function MapScene({
     const old = scene.getObjectByName('routes');
     if (old) scene.remove(old);
     if (routes && routes.length) {
-      scene.add(buildRoutes(routes, selectedRouteKey, sampler));
+      const group = buildRoutes(routes, selectedRouteKey, sampler);
+      group.visible = mode !== 'editRoute'; // в редакторе видна только живая труба
+      scene.add(group);
     }
-  }, [routes, selectedRouteKey, meshData]);
+  }, [routes, selectedRouteKey, meshData, mode]);
 
-  // ---------- обработка кликов (День 5) ----------
+  // ---------- режим редактирования: узлы + «живая труба» (День 11) ----------
+  const rebuildEditNodes = () => {
+    const { scene, sampler } = stateRef.current;
+    if (!scene || !editPathRef.current) return;
+    const old = scene.getObjectByName('edit-nodes');
+    if (old) scene.remove(old);
+    const group = new THREE.Group();
+    group.name = 'edit-nodes';
+    editPathRef.current.forEach(([x, y], i) => {
+      const n = editPathRef.current.length;
+      const isEnd = i === 0 || i === n - 1;
+      const ground = sampler ? sampler(x, y) : 0;
+      const node = new THREE.Mesh(
+        new THREE.SphereGeometry(isEnd ? 1.8 : 2.6, 14, 14),
+        new THREE.MeshStandardMaterial({
+          color: isEnd ? NODE_END_COLOR : NODE_COLOR,
+          emissive: isEnd ? 0x000000 : 0x7a5c00,
+          emissiveIntensity: 0.5,
+        }),
+      );
+      node.position.copy(mapToScene(x, y, ground + PIPE_LIFT));
+      node.userData = { type: 'pipe-node', pathIdx: i, draggable: !isEnd };
+      group.add(node);
+    });
+    scene.add(group);
+  };
+
+  const rebuildEditedPipe = () => {
+    const { scene, sampler } = stateRef.current;
+    if (!scene || !editPathRef.current) return;
+    const old = scene.getObjectByName('edited-route');
+    if (old) scene.remove(old);
+    const collision = stateRef.current.collision;
+    const pipe = buildPipe(
+      { key: 'edited', path: editPathRef.current,
+        color: collision ? '#ff4757' : '#fdcb6e' },
+      true, sampler,
+    );
+    if (pipe) {
+      pipe.name = 'edited-route';
+      scene.add(pipe);
+    }
+  };
+
+  // Вход/выход из режима редактирования.
   useEffect(() => {
-    const { renderer, camera, scene } = stateRef.current;
+    const { scene, gizmo } = stateRef.current;
+    if (!scene || !gizmo) return;
+    if (mode === 'editRoute' && editPath) {
+      editPathRef.current = editPath.map((p) => [...p]);
+      rebuildEditNodes();
+      rebuildEditedPipe();
+    } else {
+      gizmo.detach();
+      editPathRef.current = null;
+      for (const name of ['edit-nodes', 'edited-route']) {
+        const old = scene.getObjectByName(name);
+        if (old) scene.remove(old);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  // ---------- коллизия: труба краснеет (День 14) ----------
+  useEffect(() => {
+    stateRef.current.collision = Boolean(validation?.collision);
+    if (mode === 'editRoute') rebuildEditedPipe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [validation]);
+
+  // ---------- обработка кликов (Дни 5, 8, 11) ----------
+  useEffect(() => {
+    const { renderer, camera, scene, gizmo } = stateRef.current;
     if (!renderer) return;
 
     const raycaster = new THREE.Raycaster();
@@ -174,35 +282,43 @@ export default function MapScene({
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
+      const cb = cbRef.current;
 
-      if (mode === 'selectNetwork') {
-        // Ищем пересечение с невидимыми «трубами» теплосетей.
+      if (mode === 'editRoute') {
+        // Клик по узлу — цепляем gizmo; клик мимо — отцепляем.
+        const nodes = scene.getObjectByName('edit-nodes');
+        if (!nodes) return;
+        const hits = raycaster.intersectObjects(nodes.children, false);
+        const hit = hits.find((h) => h.object.userData.draggable);
+        if (hit) gizmo.attach(hit.object);
+        else gizmo.detach();
+      } else if (mode === 'selectNetwork') {
         const group = scene.getObjectByName('heat_networks');
         if (!group) return;
         const hits = raycaster.intersectObjects(group.children, false);
         const hit = hits.find((h) => h.object.userData.type === 'heat');
-        if (hit) onNetworkClick(hit.object.userData.id);
+        if (hit) cb.onNetworkClick?.(hit.object.userData.id);
       } else if (mode === 'addBuilding') {
         const terrain = scene.getObjectByName('terrain');
         if (!terrain) return;
         const [hit] = raycaster.intersectObject(terrain, false);
         if (hit) {
           // Координаты сцены -> координаты карты (x, y): инверсия mapToScene.
-          onTerrainClick([hit.point.x, -hit.point.z]);
+          cb.onTerrainClick?.([hit.point.x, -hit.point.z]);
         }
       } else {
         // Режим обзора: клик по трубе варианта — выбрать этот вариант.
         const group = scene.getObjectByName('routes');
-        if (!group || !onRouteClick) return;
+        if (!group) return;
         const hits = raycaster.intersectObjects(group.children, false);
         const hit = hits.find((h) => h.object.userData.type === 'route');
-        if (hit) onRouteClick(hit.object.userData.key);
+        if (hit) cb.onRouteClick?.(hit.object.userData.key);
       }
     };
 
     renderer.domElement.addEventListener('click', onClick);
     return () => renderer.domElement.removeEventListener('click', onClick);
-  }, [mode, onTerrainClick, onNetworkClick, onRouteClick, floors, buildingSize]);
+  }, [mode, floors, buildingSize]);
 
   return <div ref={mountRef} className="scene-mount" />;
 }

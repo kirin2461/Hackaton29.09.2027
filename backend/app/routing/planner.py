@@ -23,7 +23,7 @@ import math
 from typing import Any
 
 import numpy as np
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import nearest_points
 from shapely.prepared import prep
 
@@ -85,6 +85,11 @@ class RoutePlanner:
                 self.oy + (j + 0.5) * self.cell)
 
     def _rasterize_buildings(self, features: list[dict]) -> None:
+        """Блокирует ячейки, ПЕРЕСЕКАЮЩИЕСЯ со зданием (не только центр).
+
+        Иначе прямая между центрами двух свободных ячеек могла бы
+        «срезать угол» здания — и трасса прошла бы сквозь стены.
+        """
         for f in features:
             poly = Polygon(f["coordinates"])
             if not poly.is_valid or poly.is_empty:
@@ -93,8 +98,11 @@ class RoutePlanner:
             xs, ys = self._cells_in_bbox(*poly.bounds)
             for i in xs:
                 for j in ys:
-                    cx, cy = self.cell_center(i, j)
-                    if prepared.covers(Point(cx, cy)):
+                    cell = box(self.ox + i * self.cell,
+                               self.oy + j * self.cell,
+                               self.ox + (i + 1) * self.cell,
+                               self.oy + (j + 1) * self.cell)
+                    if prepared.intersects(cell):
                         self.blocked[i, j] = True
 
     def _rasterize_roads(self, features: list[dict]) -> None:

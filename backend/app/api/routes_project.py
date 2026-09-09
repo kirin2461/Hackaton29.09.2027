@@ -82,3 +82,80 @@ def connect(req: ConnectionRequest, parser: GISParser = Depends(get_parser)):
             "length_m": round(length_m, 1),
         },
     }
+
+
+# ---------- День 14-15: сохранение проекта ----------
+
+import json
+import uuid
+from datetime import datetime, timezone
+
+from ..config import PROJECTS_DIR
+from ..deps import get_normalized_layers
+from ..routing.estimate import validate_path
+
+
+class SaveRequest(BaseModel):
+    """Сохранение трассы: здание, сеть и финальная полилиния."""
+
+    building: NewBuilding
+    network_id: str
+    path: list[list[float]] = Field(..., description="Точки трассы [[x, y], ...]")
+    variant: str = Field("custom", description="Ключ варианта или 'custom' после правок")
+
+
+def _safe_polygon(coords):
+    """Строит валидный полигон из координат фичи слоя или None."""
+    try:
+        p = Polygon(coords)
+    except (TypeError, ValueError):
+        return None
+    return p if p.is_valid else None
+
+
+@router.post("/save")
+def save_project(req: SaveRequest, layers: dict = Depends(get_normalized_layers)):
+    """Сохраняет проект трассировки в JSON на сервере.
+
+    День 14: если трасса пересекает здание (пользователь затянул
+    трубу gizmo'м под дом), сохранение блокируется ошибкой 409 —
+    фронтенд при этом ещё и гасит кнопку.
+    """
+    check = validate_path(req.path, layers)
+    if check["collision"]:
+        raise HTTPException(
+            409,
+            f"Трасса пересекает здания: {', '.join(check['collision_buildings'])}. "
+            "Исправьте трассу перед сохранением.",
+        )
+
+    # Новое здание не должно пересекаться с существующей застройкой.
+    placed = Polygon(req.building.polygon)
+    overlap = [
+        f["id"]
+        for f in layers.get("buildings", [])
+        if (p := _safe_polygon(f.get("coordinates"))) is not None
+        and placed.intersects(p)
+    ]
+    if overlap:
+        raise HTTPException(
+            409,
+            f"Здание пересекается с существующими: {', '.join(overlap)}. "
+            "Переместите его на свободное место.",
+        )
+
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    project_id = uuid.uuid4().hex[:8]
+    payload = {
+        "id": project_id,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "building": req.building.model_dump(),
+        "network_id": req.network_id,
+        "variant": req.variant,
+        "path": req.path,
+        "estimate": check,
+    }
+    (PROJECTS_DIR / f"{project_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return {"saved": True, "project_id": project_id, "estimate": check}

@@ -14,8 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from shapely.geometry import Polygon
 
-from ..deps import get_parser, get_planner
+from ..deps import get_normalized_layers, get_parser, get_planner
 from ..gis.parser import LAYER_HEAT, GISParser
+from ..routing.estimate import validate_path
 from ..routing.planner import (
     DEFAULT_ROAD_MULTIPLIER,
     DEFAULT_TURN_PENALTY,
@@ -46,7 +47,8 @@ class RouteRequest(BaseModel):
 @router.post("/compute")
 def compute_route(req: RouteRequest,
                   parser: GISParser = Depends(get_parser),
-                  planner: RoutePlanner = Depends(get_planner)):
+                  planner: RoutePlanner = Depends(get_planner),
+                  layers: dict = Depends(get_normalized_layers)):
     """Считает три варианта трассы A* от теплосети до здания."""
     if len(req.building.polygon) < 3:
         raise HTTPException(400, "Контуру здания нужно минимум 3 точки")
@@ -81,4 +83,40 @@ def compute_route(req: RouteRequest,
         "heat_load_kw": round(float(building.area) * req.building.floors * 0.06, 1),
     }
     result["network_id"] = req.network_id
+
+    # Проверка размещения: новое здание не должно пересекаться
+    # со существующей застройкой. Трасса всё равно считается,
+    # но фронтенд покажет предупреждение.
+    placement = {"collision": False, "buildings": []}
+    for feat in layers.get("buildings", []):
+        try:
+            other = Polygon(feat["coordinates"])
+        except (TypeError, ValueError):
+            continue
+        if other.is_valid and building.intersects(other):
+            placement["collision"] = True
+            placement["buildings"].append(feat["id"])
+    result["placement"] = placement
     return result
+
+
+class ValidateRequest(BaseModel):
+    """Тело POST /api/route/validate — полилиния трассы (Дни 12–14).
+
+    Присылается после A* и после каждого перетаскивания узла трубы
+    gizmo'м — бэкенд мгновенно возвращает коллизии и смету.
+    """
+
+    path: list[list[float]] = Field(
+        ..., description="Точки трассы [[x, y], ...], минимум 2"
+    )
+
+
+@router.post("/validate")
+def validate_route(req: ValidateRequest,
+                   layers: dict = Depends(get_normalized_layers)):
+    """Валидация трассы: коллизии, переходы под дорогами, смета."""
+    try:
+        return validate_path(req.path, layers)
+    except ValueError as e:
+        raise HTTPException(422, str(e))

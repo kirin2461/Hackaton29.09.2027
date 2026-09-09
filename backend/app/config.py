@@ -14,6 +14,9 @@ BASE_DIR = Path(__file__).resolve().parent
 # Папка с демо-геоданными (GeoJSON-слои: здания, дороги, теплосети).
 DATA_DIR = Path(os.getenv("GIS_DATA_DIR", BASE_DIR / "data"))
 
+# Папка сохранённых проектов трассировки (День 14-15).
+PROJECTS_DIR = Path(os.getenv("PROJECTS_DIR", BASE_DIR / "data" / "projects"))
+
 # Исходная система координат демо-данных (WGS84, градусы).
 SOURCE_CRS = os.getenv("GIS_SOURCE_CRS", "EPSG:4326")
 

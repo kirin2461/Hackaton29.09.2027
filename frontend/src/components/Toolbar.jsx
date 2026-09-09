@@ -1,15 +1,18 @@
 // Панель инструментов.
-// День 5 — интерфейс «Точка посадки»; Спринт 2 — варианты трассы A*,
-// бегунки штрафов (штраф за поворот / проход по дорогам).
+// Спринт 2 — варианты трассы A*, бегунки штрафов.
+// Спринт 3 — смета/гидравлика, редактирование трубы, сохранение.
+// Спринт 4 — экспорт сцены в .glb.
 
 export default function Toolbar({
   mode, setMode, floors, setFloors, buildingSize, setBuildingSize,
   networks, selectedNetworkId, onPickNetwork, routeData, routing,
   selectedRouteKey, onSelectRoute,
   turnPenalty, setTurnPenalty, roadMult, setRoadMult,
-  error, onReset, backendOk,
+  validation, savedId, onStartEdit, onFinishEdit, onSave, onExport,
+  error, onReset, onDemo, backendOk,
 }) {
   const variants = routeData?.variants ?? [];
+  const collision = Boolean(validation?.collision);
 
   return (
     <aside className="toolbar">
@@ -61,7 +64,7 @@ export default function Toolbar({
 
       {mode === 'selectNetwork' && (
         <div className="group">
-          <p className="hint">Кликните по красной линии теплосети на карте.</p>
+          <p className="hint">Кликните по красной трубе на карте или по имени:</p>
           <ul className="network-list">
             {networks.map((n) => (
               <li
@@ -96,11 +99,21 @@ export default function Toolbar({
               </div>
             </div>
           ))}
-          <p className="hint">Клик по варианту или по трубе на карте — выбрать.</p>
+          {mode === 'editRoute' ? (
+            <>
+              <button onClick={onFinishEdit}>✓ Закончить правку</button>
+              <p className="hint">
+                Кликните по оранжевому узлу и тяните — труба и смета
+                пересчитаются на лету.
+              </p>
+            </>
+          ) : (
+            <button onClick={onStartEdit}>✎ Редактировать трассу</button>
+          )}
         </div>
       )}
 
-      {variants.length > 0 && (
+      {variants.length > 0 && mode !== 'editRoute' && (
         <div className="group">
           <h2>Подгонка трассы</h2>
           <label>
@@ -120,17 +133,61 @@ export default function Toolbar({
         </div>
       )}
 
+      {validation && (
+        <div className="group result">
+          <h2>Смета и гидравлика</h2>
+          <p>Длина: {validation.length_m} м</p>
+          <p>Поворотов: {validation.turns}</p>
+          <p>Переходов под дорогами: {validation.road_crossings}</p>
+          <p>Теплопотери: {validation.heat_loss_kw} кВт</p>
+          <p className="cost">Стоимость: {validation.cost_mln_rub} млн ₽</p>
+          {collision && (
+            <p className="error">
+              ⚠ Трасса пересекает здания: {validation.collision_buildings.join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+
       {routeData?.building && (
         <div className="group result">
-          <h2>Расчёт подключения</h2>
+          <h2>Подключение</h2>
           <p>Площадь: {routeData.building.area_m2} м²</p>
           <p>Нагрузка: {routeData.building.heat_load_kw} кВт</p>
-          <p>По прямой до сети: {routeData.connection.length_m} м</p>
+          {routeData.placement?.collision && (
+            <p className="error">
+              ⚠ Новое здание пересекается с существующими:{' '}
+              {routeData.placement.buildings.join(', ')}. Переместите его на
+              свободное место.
+            </p>
+          )}
+        </div>
+      )}
+
+      {variants.length > 0 && (
+        <div className="group">
+          <button
+            className="save"
+            onClick={onSave}
+            disabled={collision || routeData?.placement?.collision}
+            title={
+              collision
+                ? 'Сначала исправьте коллизию'
+                : routeData?.placement?.collision
+                  ? 'Здание пересекается с существующей застройкой'
+                  : ''
+            }
+          >
+            💾 Сохранить проект
+          </button>
+          <button onClick={onExport}>⤓ Экспорт сцены (.glb)</button>
+          {savedId && <p className="status ok">Сохранено: {savedId}</p>}
         </div>
       )}
 
       {error && <p className="error">{error}</p>}
 
+      <button className="demo" onClick={onDemo}>▶ Демо-сценарий</button>
       <button className="reset" onClick={onReset}>Сбросить проект</button>
     </aside>
   );

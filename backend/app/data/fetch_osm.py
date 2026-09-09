@@ -51,7 +51,13 @@ FLOORS_BY_TYPE = {"apartments": 5, "residential": 3, "house": 2, "detached": 2,
 def fetch(bbox: str) -> list[dict]:
     """Выполняет Overpass-запрос и возвращает список элементов OSM."""
     data = urllib.parse.urlencode({"data": QUERY.format(bbox=bbox)}).encode()
-    with urllib.request.urlopen(OVERPASS, data=data, timeout=240) as r:
+    # Overpass режет анонимный urllib-агент (406), представляемся явно.
+    req = urllib.request.Request(OVERPASS, data=data, headers={
+        "User-Agent": "Hackaton29-HeatNetworks/1.0 "
+                      "(Moscow DIT hackathon, educational GIS service)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=240) as r:
         return json.loads(r.read())["elements"]
 
 
@@ -124,7 +130,7 @@ def build_buildings(elements, clip) -> list[dict]:
     return feats
 
 
-def build_roads(elements, clip) -> list[dict]:
+def build_roads(elements, clip=None) -> list[dict]:
     feats = []
     for e in elements:
         t = e.get("tags", {})
@@ -137,10 +143,12 @@ def build_roads(elements, clip) -> list[dict]:
                 "geometry": {"type": "LineString", "coordinates": coords},
                 "properties": {"id": f"r{e['id']}", "name": t.get("name", ""),
                                "highway": t["highway"]}}
-        g = clip_geom(feat, clip, "LineString")
-        if g is None or g.length < 1e-5:
-            continue
-        feat["geometry"] = {"type": "LineString", "coordinates": rounded(g.coords)}
+        if clip is not None:
+            g = clip_geom(feat, clip, "LineString")
+            if g is None or g.length < 1e-5:
+                continue
+            feat["geometry"] = {"type": "LineString",
+                                "coordinates": rounded(g.coords)}
         feats.append(feat)
     return feats
 
@@ -235,6 +243,76 @@ def build_heat(elements, clip) -> list[dict]:
             feat["properties"]["name"] = f"Теплотрасса h{n}"
             feats.append(feat)
     return feats
+
+
+def derive_heat_from_roads(roads: list[dict],
+                           clip=None) -> list[dict]:
+    """Резервная модель теплосети для районов без OSM-трубопроводов.
+
+    По Москве надземные теплотрассы размечены в OSM местами (обычно
+    от крупных котельных). Если в bbox их нет, строим модельную сеть
+    вдоль главных магистралей — по СП 124.13330 распределительные
+    тепловые сети прокладывают именно вдоль дорог. Берём две самые
+    длинные дороги класса primary/secondary/tertiary.
+    """
+    cand = [f for f in roads
+            if f["properties"].get("highway")
+            in {"primary", "secondary", "tertiary", "trunk"}]
+    cand.sort(key=lambda f: -len(f["geometry"]["coordinates"]))
+    feats = []
+    for n, f in enumerate(cand[:2], 1):
+        g = shape(f["geometry"])
+        if clip is not None:
+            g = g.intersection(clip)
+            if g.is_empty:
+                continue
+            if g.geom_type != "LineString":
+                parts = [x for x in getattr(g, "geoms", [])
+                         if x.geom_type == "LineString"]
+                if not parts:
+                    continue
+                g = max(parts, key=lambda x: x.length)
+        feats.append({"type": "Feature",
+                      "geometry": {"type": "LineString",
+                                   "coordinates": rounded(g.coords)},
+                      "properties": {
+                          "id": f"h{n}",
+                          "name": f"Модельная теплотрасса h{n} "
+                                  f"(вдоль {f['properties'].get('name') or 'магистрали'})",
+                          "source": "derived: along main road "
+                                    "(OSM pipelines absent)"}})
+    return feats
+
+
+def run_district(min_lat: float, min_lon: float,
+                 max_lat: float, max_lon: float) -> dict:
+    """Полный цикл для произвольного bbox: Overpass → 3 слоя GeoJSON.
+
+    Возвращает статистику (для API /api/map/load_bbox). Если в районе
+    нет размеченных теплотрасс — подставляет модельную сеть вдоль
+    главных дорог (с пометкой source=derived в свойствах).
+    """
+    bbox = f"{min_lat},{min_lon},{max_lat},{max_lon}"
+    clip = shapely_box(min_lon, min_lat, max_lon, max_lat)
+    elements = fetch(bbox)
+
+    buildings = build_buildings(elements, clip)
+    roads = build_roads(elements, clip)
+    heat = build_heat(elements, clip)
+    heat_source = "osm"
+    if not heat:
+        heat = derive_heat_from_roads(roads)
+        heat_source = "derived"
+
+    layers = {"buildings": buildings, "roads": roads, "heat_networks": heat}
+    for name, feats in layers.items():
+        (DATA_DIR / f"{name}.geojson").write_text(json.dumps(
+            {"type": "FeatureCollection", "features": feats},
+            ensure_ascii=False), encoding="utf-8")
+
+    return {"buildings": len(buildings), "roads": len(roads),
+            "heat_networks": len(heat), "heat_source": heat_source,
+            "osm_elements": len(elements)}
 
 
 def main() -> None:

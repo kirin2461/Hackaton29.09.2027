@@ -91,3 +91,34 @@ export const postSave = (polygon, floors, networkId, path, variant) =>
       variant,
     }),
   });
+
+/**
+ * Обратная задача (сканирование площадок): топ-N свободных участков
+ * квартала, ранжированных по стоимости технологического присоединения.
+ */
+export const postScan = (networkId, buildingSize, floors, step = 80, top = 5) =>
+  request('/api/route/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      network_id: networkId,
+      building_size: buildingSize,
+      floors,
+      step,
+      top,
+    }),
+  });
+
+/** Список готовых пресетов районов Москвы. */
+export const fetchPresets = () => request('/api/map/presets');
+
+/**
+ * Загрузка произвольного района из OpenStreetMap (по пресету или bbox).
+ * Сервер сам ходит в Overpass API, пересобирает слои и сбрасывает кэш.
+ */
+export const postLoadBbox = (payload) =>
+  request('/api/map/load_bbox', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });

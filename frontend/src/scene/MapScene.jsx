@@ -22,7 +22,7 @@ const NODE_END_COLOR = 0x9fb3d1;  // концевые узлы (врезка/з�
 export default function MapScene({
   meshData, layersData, mode, floors, buildingSize,
   newBuilding, selectedNetworkId, routes, selectedRouteKey,
-  editPath, validation,
+  editPath, validation, siteScan, xray,
   onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
 }) {
   const mountRef = useRef(null);
@@ -343,5 +343,122 @@ export default function MapScene({
     return () => renderer.domElement.removeEventListener('click', onClick);
   }, [mode, floors, buildingSize]);
 
+  // ---------- маркеры топ-площадок (обратная задача) ----------
+  useEffect(() => {
+    const { scene, sampler } = stateRef.current;
+    if (!scene) return;
+    const old = scene.getObjectByName('site-markers');
+    if (old) scene.remove(old);
+    if (!siteScan?.top?.length) return;
+    const group = new THREE.Group();
+    group.name = 'site-markers';
+    siteScan.top.forEach((t) => {
+      // Контур площадки — жёлтая рамка на рельефе.
+      const pts = t.polygon.map(([x, y]) => {
+        const g = sampler ? sampler(x, y) : 0;
+        return mapToScene(x, y, g + 0.6);
+      });
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      group.add(new THREE.Line(
+        geo, new THREE.LineBasicMaterial({ color: 0xffd166 }),
+      ));
+      // Номер в рейтинге — спрайт над центром площадки.
+      const [cx, cy] = t.center;
+      const g = sampler ? sampler(cx, cy) : 0;
+      const sprite = makeRankSprite(t.rank);
+      sprite.position.copy(mapToScene(cx, cy, g + 20));
+      sprite.scale.set(16, 16, 1);
+      group.add(sprite);
+    });
+    scene.add(group);
+  }, [siteScan, meshData]);
+
+  // ---------- рентген-режим: земля прозрачная, трубы на глубине ----------
+  useEffect(() => {
+    const { scene, sampler, controls } = stateRef.current;
+    if (!scene) return;
+    const terrain = scene.getObjectByName('terrain');
+    const buildingsG = scene.getObjectByName('buildings');
+    const roadsG = scene.getObjectByName('roads');
+    const trees = scene.getObjectByName('trees');
+    const old = scene.getObjectByName('xray-pipes');
+    if (old) scene.remove(old);
+
+    const setOpacity = (obj, opacity) => {
+      if (!obj) return;
+      obj.traverse((o) => {
+        if (o.isMesh && o.material) {
+          o.material.transparent = opacity < 1;
+          o.material.opacity = opacity;
+          o.material.depthWrite = opacity >= 1;
+          o.material.needsUpdate = true;
+        }
+      });
+    };
+
+    if (!xray) {
+      setOpacity(terrain, 1);
+      setOpacity(buildingsG, 1);
+      setOpacity(roadsG, 1);
+      if (trees) trees.visible = true;
+      if (controls) controls.maxPolarAngle = Math.PI * 0.49;
+      return;
+    }
+
+    setOpacity(terrain, 0.22);
+    setOpacity(buildingsG, 0.3);
+    setOpacity(roadsG, 0.25);
+    if (trees) trees.visible = false;
+    if (controls) controls.maxPolarAngle = Math.PI * 0.8; // заглянуть снизу
+
+    const group = new THREE.Group();
+    group.name = 'xray-pipes';
+    const addUnderground = (coords, depth, color, radius) => {
+      if (!coords || coords.length < 2) return;
+      const pts = coords.map(([x, y]) => {
+        const g = sampler ? sampler(x, y) : 0;
+        return mapToScene(x, y, g - depth);
+      });
+      const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.0);
+      group.add(new THREE.Mesh(
+        new THREE.TubeGeometry(curve, Math.max(16, pts.length * 4), radius, 8, false),
+        new THREE.MeshStandardMaterial({
+          color, emissive: color, emissiveIntensity: 0.8,
+        }),
+      ));
+    };
+    // Существующие теплотрассы — нормативная глубина заложения −2 м.
+    (layersData?.layers?.heat_networks ?? []).forEach((f) =>
+      addUnderground(f.coordinates, 2.0, 0xff6b35, 1.6));
+    // Новая трасса — −3 м (подземная канальная прокладка).
+    const v = routes?.find((x) => x.key === selectedRouteKey);
+    if (v) addUnderground(v.path, 3.0, 0x00e5ff, 2.0);
+    scene.add(group);
+  }, [xray, layersData, routes, selectedRouteKey, meshData]);
+
   return <div ref={mountRef} className="scene-mount" />;
+}
+
+/** Спрайт с номером площадки в рейтинге (canvas → текстура). */
+function makeRankSprite(rank) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.beginPath();
+  ctx.arc(64, 64, 56, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffd166';
+  ctx.fill();
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = '#1c2833';
+  ctx.stroke();
+  ctx.fillStyle = '#1c2833';
+  ctx.font = 'bold 64px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(rank), 64, 68);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas) }),
+  );
+  return sprite;
 }

@@ -1,4 +1,5 @@
 // Панель инструментов.
+import { useState } from 'react';
 // Спринт 2 — варианты трассы A*, бегунки штрафов.
 // Спринт 3 — смета/гидравлика, редактирование трубы, сохранение.
 // Спринт 4 — экспорт сцены в .glb.
@@ -10,7 +11,14 @@ export default function Toolbar({
   turnPenalty, setTurnPenalty, roadMult, setRoadMult,
   validation, netStats, savedId, onStartEdit, onFinishEdit, onSave, onExport,
   error, onReset, onDemo, backendOk,
+  siteScan, scanning, onScan, onPickSite,
+  xray, onToggleXray,
+  presets, districtLoading, onLoadDistrict,
 }) {
+  // Локальные поля произвольного bbox (градусы WGS84).
+  const [bbox, setBbox] = useState({ min_lat: '', min_lon: '', max_lat: '', max_lon: '' });
+  const bboxReady = ['min_lat', 'min_lon', 'max_lat', 'max_lon']
+    .every((k) => bbox[k] !== '' && Number.isFinite(Number(bbox[k])));
   const variants = routeData?.variants ?? [];
   const collision = Boolean(validation?.collision);
 
@@ -80,6 +88,34 @@ export default function Toolbar({
       )}
 
       {routing && <p className="status">Расчёт трассы…</p>}
+
+      <div className="group">
+        <h2>Обратная задача</h2>
+        <button onClick={onScan} disabled={scanning}>
+          {scanning ? '⏳ Сканирую квартал…' : '🔍 Топ-5 площадок под здание'}
+        </button>
+        {siteScan && (
+          <>
+            <p className="hint">
+              Проверено {siteScan.scanned} участков, подходит {siteScan.viable}.
+              Площадка {siteScan.building_size_m}×{siteScan.building_size_m} м,
+              {' '}{siteScan.floors} эт.
+            </p>
+            <ul className="site-list">
+              {siteScan.top.map((t) => (
+                <li key={t.rank} onClick={() => onPickSite(t)}>
+                  <b>#{t.rank}</b> {t.cost_mln_rub} млн ₽
+                  <small>
+                    {t.length_m} м · ΔH{' '}
+                    {t.entropy_delta >= 0 ? '+' : ''}
+                    {(t.entropy_delta * 100).toFixed(2)} п.п.
+                  </small>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
 
       {variants.length > 0 && (
         <div className="group">
@@ -176,6 +212,20 @@ export default function Toolbar({
               </p>
             </>
           )}
+          {validation?.reliability && (
+            <>
+              <p className="impact">
+                N-1 (худший отказ): {validation.reliability.before.n1_worst_pct}% →{' '}
+                {validation.reliability.after.n1_worst_pct}% тепла без подачи
+              </p>
+              <p className="impact">
+                Монте-Карло ({validation.reliability.before.mc_trials} сценариев, p=
+                {validation.reliability.before.fail_prob}):{' '}
+                {validation.reliability.before.mc_unserved_pct}% →{' '}
+                {validation.reliability.after.mc_unserved_pct}%
+              </p>
+            </>
+          )}
         </div>
       )}
 
@@ -216,6 +266,59 @@ export default function Toolbar({
       )}
 
       {error && <p className="error">{error}</p>}
+
+      <div className="group">
+        <button className={xray ? 'active' : ''} onClick={onToggleXray}>
+          {xray ? '🩻 Рентген: ВКЛ' : '🩻 Рентген (подземные сети)'}
+        </button>
+        {xray && (
+          <p className="hint">
+            Земля полупрозрачная: существующие трубы на глубине −2 м,
+            новая трасса — −3 м. Камера может опускаться ниже горизонта.
+          </p>
+        )}
+      </div>
+
+      <div className="group">
+        <h2>Район (OpenStreetMap)</h2>
+        {presets.length > 0 && (
+          <div className="preset-grid">
+            {presets.map((pr) => (
+              <button
+                key={pr.key}
+                disabled={districtLoading}
+                onClick={() => onLoadDistrict({ preset: pr.key })}
+              >
+                {pr.key}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="bbox-grid">
+          {['min_lat', 'min_lon', 'max_lat', 'max_lon'].map((k) => (
+            <input
+              key={k}
+              placeholder={k}
+              value={bbox[k]}
+              onChange={(e) => setBbox({ ...bbox, [k]: e.target.value })}
+            />
+          ))}
+        </div>
+        <button
+          disabled={!bboxReady || districtLoading}
+          onClick={() => onLoadDistrict({
+            min_lat: Number(bbox.min_lat),
+            min_lon: Number(bbox.min_lon),
+            max_lat: Number(bbox.max_lat),
+            max_lon: Number(bbox.max_lon),
+          })}
+        >
+          {districtLoading ? '⏳ Загружаю из OSM…' : '⤓ Загрузить свой bbox'}
+        </button>
+        {districtLoading && (
+          <p className="hint">Overpass API собирает геометрию — до минуты.</p>
+        )}
+      </div>
 
       <button className="demo" onClick={onDemo}>▶ Демо-сценарий</button>
       <button className="reset" onClick={onReset}>Сбросить проект</button>

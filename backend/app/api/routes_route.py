@@ -18,6 +18,8 @@ from ..deps import get_normalized_layers, get_parser, get_planner
 from ..gis.parser import LAYER_HEAT, GISParser
 from ..routing.estimate import validate_path
 from ..routing.netstats import impact as network_impact
+from ..routing.netstats import reliability as network_reliability
+from ..routing.sitescan import scan_sites
 from ..routing.planner import (
     DEFAULT_ROAD_MULTIPLIER,
     DEFAULT_TURN_PENALTY,
@@ -89,6 +91,11 @@ def compute_route(req: RouteRequest,
     # кольцевание, число Фидлера) — помогает выбрать не только
     # самую дешёвую, но и самую «безболезненную» для сети врезку.
     heat_lines = [f["coordinates"] for f in layers.get(LAYER_HEAT, [])]
+    # Отказоустойчивость базовой сети (N-1 + Монте-Карло) — считаем
+    # один раз, сравнение «до/после» фронт делает по ветке-варианту.
+    result["reliability"] = {
+        "before": network_reliability(heat_lines),
+    }
     for v in result.get("variants", []):
         v["network_impact"] = network_impact(heat_lines, v["path"])
 
@@ -132,4 +139,57 @@ def validate_route(req: ValidateRequest,
         raise HTTPException(422, str(e))
     heat_lines = [f["coordinates"] for f in layers.get(LAYER_HEAT, [])]
     result["network"] = network_impact(heat_lines, req.path)
+    # Живучесть «до/после» врезки: точный N-1 и Монте-Карло
+    # (каждое ребро отказывает с p=0.05, 300 сценариев, seed=2027).
+    result["reliability"] = {
+        "before": network_reliability(heat_lines),
+        "after": network_reliability(heat_lines, req.path),
+    }
+    return result
+
+
+class ScanRequest(BaseModel):
+    """Тело POST /api/route/scan — обратная задача.
+
+    Вместо «есть здание — проведи трубу» сканируем свободные
+    участки квартала и ранжируем их по стоимости присоединения.
+    """
+
+    network_id: str | None = Field(
+        None, description="id теплосети (по умолчанию — первая)")
+    building_size: float = Field(40.0, ge=10, le=120,
+                                 description="Сторона квадратной площадки, м")
+    floors: int = Field(9, ge=1, le=100)
+    step: float = Field(80.0, ge=30, le=300,
+                        description="Шаг сетки сканирования, м")
+    top: int = Field(5, ge=1, le=20)
+
+
+@router.post("/scan")
+def scan_route(req: ScanRequest,
+               parser: GISParser = Depends(get_parser),
+               planner: RoutePlanner = Depends(get_planner),
+               layers: dict = Depends(get_normalized_layers)):
+    """Ищет топ-N площадок под новое здание по цене присоединения."""
+    heat_feats = layers.get(LAYER_HEAT, [])
+    if not heat_feats:
+        raise HTTPException(422, "В квартале нет теплосети для подключения")
+    target = (next((f for f in heat_feats if f["id"] == req.network_id), None)
+              if req.network_id else heat_feats[0])
+    if target is None:
+        raise HTTPException(404, f"Теплосеть '{req.network_id}' не найдена")
+
+    raw_bounds = parser._bounds()
+    ox, oy = (raw_bounds[0], raw_bounds[1]) if raw_bounds else (0.0, 0.0)
+    w = (raw_bounds[2] - ox) if raw_bounds else 0.0
+    h = (raw_bounds[3] - oy) if raw_bounds else 0.0
+
+    result = scan_sites(layers, [0.0, 0.0, w, h], planner,
+                        target["coordinates"],
+                        size=req.building_size, floors=req.floors,
+                        step=req.step, top=req.top)
+    result["network_id"] = target["id"]
+    # Живучесть базовой сети — чтобы фронт показал «до» рядом с Δ.
+    heat_lines = [f["coordinates"] for f in heat_feats]
+    result["reliability_before"] = network_reliability(heat_lines)
     return result

@@ -149,20 +149,10 @@ def network_metrics(lines: list[list[list[float]]]) -> dict[str, Any]:
     return graph_metrics(len(nodes), edges, deg)
 
 
-def impact(network_lines: list[list[list[float]]],
-           path: list[list[float]]) -> dict[str, Any]:
-    """Δ-импакт новой ветки: метрики сети до и после подключения.
-
-    path — полилиния новой трассы; её первое звено начинается
-    в точке врезки на существующей сети. Точка врезки может лежать
-    посреди сегмента — тогда сегмент разбиваем на два, чтобы граф
-    остался топологически корректным.
-    """
-    before = network_metrics(network_lines)
-
-    # Разбиваем сегмент сети в точке врезки: ищем ближайшую
-    # проекцию начала трассы на сегмент (A* привязывает точку
-    # к сетке 10 м, поэтому точного попадания в вершину нет).
+def _with_branch(network_lines: list[list[list[float]]],
+                 path: list[list[float]]):
+    """Сеть + новая ветка: сегмент в точке врезки разбивается на два,
+    сама ветка начинается строго из точки врезки."""
     attach = path[0]
     lines = [list(l) for l in network_lines]
     best = None  # (dist, li, si, px, py)
@@ -188,9 +178,94 @@ def impact(network_lines: list[list[list[float]]],
             lines[li] = line[:si + 1] + [[px, py]] + line[si + 1:]
         # саму ветку начинаем строго из точки врезки
         path = [[px, py]] + [list(p) for p in path[1:]]
+    return lines + [path]
 
-    after = network_metrics(lines + [path])
+
+def impact(network_lines: list[list[list[float]]],
+           path: list[list[float]]) -> dict[str, Any]:
+    """Δ-импакт новой ветки: метрики сети до и после подключения."""
+    before = network_metrics(network_lines)
+    after = network_metrics(_with_branch(network_lines, path))
     delta = {}
     for k in ("entropy_norm", "fiedler", "loops", "dead_ends"):
         delta[k] = round(after[k] - before[k], 6)
     return {"before": before, "after": after, "delta": delta}
+
+
+# ---------- отказоустойчивость: N-1 и Монте-Карло ----------
+
+def _unserved_share(n: int, edges: list[tuple[int, int, float]],
+                    skip: set[int]) -> float:
+    """Доля длины сети, отрезанной от крупнейшей компоненты,
+    если удалить рёбра с индексами из skip."""
+    total = sum(w for _, _, w in edges)
+    if total <= 0:
+        return 0.0
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for ei, (u, v, _) in enumerate(edges):
+        if ei not in skip:
+            parent[find(u)] = find(v)
+    comp_len: dict[int, float] = {}
+    for ei, (u, v, w) in enumerate(edges):
+        if ei not in skip:
+            root = find(u)
+            comp_len[root] = comp_len.get(root, 0.0) + w
+    if not comp_len:
+        return 0.0
+    return 1.0 - max(comp_len.values()) / total
+
+
+def reliability(network_lines: list[list[list[float]]],
+                path: list[list[float]] | None = None,
+                mc_trials: int = 300, fail_prob: float = 0.05) -> dict[str, Any]:
+    """Отказоустойчивость сети (опционально — с новой веткой).
+
+    N-1 (точный перебор): удаляем каждое ребро по очереди и смотрим,
+    какая доля сети (по длине) остаётся отрезанной от крупнейшей
+    компоненты — худший и средний случаи.
+
+    Монте-Карло: каждое ребро отказывает независимо с вероятностью
+    fail_prob (двойные-тройные отказы), ожидаемый недоотпуск —
+    средняя доля отрезанной сети по серии испытаний.
+
+    «Крупнейшая компонента» играет роль части сети, оставшейся
+    под питанием от источника тепла.
+    """
+    lines = (network_lines if path is None
+             else _with_branch(network_lines, path))
+    _, edges = build_graph(lines)
+    n = max((max(u, v) for u, v, _ in edges), default=-1) + 1
+    m = len(edges)
+    if m == 0:
+        return {"n1_worst_pct": 0.0, "n1_mean_pct": 0.0,
+                "mc_unserved_pct": 0.0, "mc_trials": 0}
+
+    # N-1: точный перебор единичных отказов
+    shares = [_unserved_share(n, edges, {i}) for i in range(m)]
+    n1_worst = max(shares) * 100
+    n1_mean = sum(shares) / m * 100
+
+    # Монте-Карло множественных отказов (фиксированный seed —
+    # результаты воспроизводимы между запросами)
+    rng = np.random.default_rng(2027)
+    mc = 0.0
+    for _ in range(mc_trials):
+        skip = {i for i in range(m) if rng.random() < fail_prob}
+        if skip:
+            mc += _unserved_share(n, edges, skip)
+    mc_pct = mc / mc_trials * 100
+
+    return {
+        "n1_worst_pct": round(n1_worst, 2),
+        "n1_mean_pct": round(n1_mean, 2),
+        "mc_unserved_pct": round(mc_pct, 2),
+        "mc_trials": mc_trials,
+        "fail_prob": fail_prob,
+    }

@@ -10,7 +10,7 @@ import MapScene from './scene/MapScene.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import {
   fetchHealth, fetchLayers, fetchTerrainMesh, fetchNetworkStats,
-  postRoute, postValidate, postSave,
+  fetchPresets, postRoute, postValidate, postSave, postScan, postLoadBbox,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
 import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
@@ -44,6 +44,17 @@ export default function App() {
   const [savedId, setSavedId] = useState(null);
   const validateRef = useRef(null);
 
+  // Обратная задача: сканирование площадок (top-N по цене присоединения).
+  const [siteScan, setSiteScan] = useState(null); // ответ /api/route/scan
+  const [scanning, setScanning] = useState(false);
+
+  // Рентген-режим: полупрозрачная земля, трубы на глубине заложения.
+  const [xray, setXray] = useState(false);
+
+  // Загрузка произвольного района из OSM.
+  const [presets, setPresets] = useState([]);
+  const [districtLoading, setDistrictLoading] = useState(false);
+
   // ---------- загрузка данных при старте ----------
   useEffect(() => {
     fetchHealth()
@@ -60,6 +71,10 @@ export default function App() {
     fetchNetworkStats()
       .then(setNetStats)
       .catch(() => setNetStats(null)); // метрики опциональны
+
+    fetchPresets()
+      .then((d) => setPresets(d.presets ?? []))
+      .catch(() => setPresets([]));
   }, []);
 
   // ---------- валидация трассы (День 12-13) ----------
@@ -247,6 +262,58 @@ export default function App() {
     runRouting(building, network.id, turnPenalty, roadMult);
   }, [layersData, runRouting, turnPenalty, roadMult]);
 
+  // ---------- обратная задача: сканирование площадок ----------
+  const handleScan = useCallback(() => {
+    setScanning(true);
+    setSiteScan(null);
+    setError(null);
+    postScan(selectedNetworkId, buildingSize, floors)
+      .then((data) => {
+        setSiteScan(data);
+        if (!data.top.length) {
+          setError('Свободных площадок в 60–500 м от теплосети не нашлось');
+        }
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setScanning(false));
+  }, [selectedNetworkId, buildingSize, floors]);
+
+  // Клик по площадке в рейтинге: ставим туда здание и строим трассу.
+  const handlePickSite = useCallback((site) => {
+    const building = {
+      polygon: site.polygon,
+      floors: siteScan?.floors ?? floors,
+      center: site.center,
+    };
+    const netId = siteScan?.network_id ?? selectedNetworkId;
+    setNewBuilding(building);
+    if (netId) setSelectedNetworkId(netId);
+    setRouteData(null);
+    setValidation(null);
+    setEditPath(null);
+    setSavedId(null);
+    setError(null);
+    setMode('view');
+    if (netId) runRouting(building, netId, turnPenalty, roadMult);
+  }, [siteScan, floors, selectedNetworkId, turnPenalty, roadMult, runRouting]);
+
+  // ---------- загрузка произвольного района из OSM ----------
+  const handleLoadDistrict = useCallback((payload) => {
+    setDistrictLoading(true);
+    setError(null);
+    postLoadBbox(payload)
+      .then(() => Promise.all([fetchLayers(), fetchTerrainMesh(), fetchNetworkStats()]))
+      .then(([layers, mesh, stats]) => {
+        setLayersData(layers);
+        setMeshData(mesh);
+        setNetStats(stats);
+        handleReset();
+        setSiteScan(null);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setDistrictLoading(false));
+  }, [handleReset]);
+
   const networks = layersData?.layers?.heat_networks ?? [];
 
   return (
@@ -280,6 +347,15 @@ export default function App() {
         onReset={handleReset}
         onDemo={handleDemo}
         backendOk={backendOk}
+        siteScan={siteScan}
+        scanning={scanning}
+        onScan={handleScan}
+        onPickSite={handlePickSite}
+        xray={xray}
+        onToggleXray={() => setXray((v) => !v)}
+        presets={presets}
+        districtLoading={districtLoading}
+        onLoadDistrict={handleLoadDistrict}
       />
       <MapScene
         meshData={meshData}
@@ -297,6 +373,8 @@ export default function App() {
         onNetworkClick={handleNetworkClick}
         onRouteClick={handleSelectRoute}
         onPathChange={handlePathChange}
+        siteScan={siteScan}
+        xray={xray}
       />
     </div>
   );

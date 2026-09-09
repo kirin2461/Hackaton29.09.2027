@@ -14,6 +14,8 @@ export default function Toolbar({
   siteScan, scanning, onScan, onPickSite,
   xray, onToggleXray,
   presets, districtLoading, onLoadDistrict,
+  lidarStatus, lidarBusy, showCloud, setShowCloud,
+  onLidarDemo, onLidarUpload, onLidarClear,
 }) {
   // Локальные поля произвольного bbox (градусы WGS84).
   const [bbox, setBbox] = useState({ min_lat: '', min_lon: '', max_lat: '', max_lon: '' });
@@ -276,6 +278,43 @@ export default function Toolbar({
             Земля полупрозрачная: существующие трубы на глубине −2 м,
             новая трасса — −3 м. Камера может опускаться ниже горизонта.
           </p>
+        )}
+      </div>
+
+      <div className="group">
+        <h2>Лидар (LAS/LAZ)</h2>
+        {lidarStatus?.active ? (
+          <>
+            <p className="hint">
+              {lidarStatus.source}: {lidarStatus.points_total.toLocaleString('ru')} точек
+              (земля: {lidarStatus.points_ground.toLocaleString('ru')}),
+              перепад {lidarStatus.z_range_m} м
+            </p>
+            <button
+              className={showCloud ? 'active' : ''}
+              onClick={() => setShowCloud((v) => !v)}
+            >
+              {showCloud ? '☁ Облако точек: ВКЛ' : '☁ Облако точек'}
+            </button>
+            <button onClick={onLidarClear} disabled={lidarBusy}>
+              ↩ Вернуть демо-рельеф
+            </button>
+          </>
+        ) : (
+          <>
+            <button onClick={onLidarDemo} disabled={lidarBusy}>
+              {lidarBusy ? '⏳ Обработка облака…' : '⚡ Демо-лидар (1,8 млн точек)'}
+            </button>
+            <label className="file-label">
+              …или свой .las/.laz:
+              <input
+                type="file"
+                accept=".las,.laz"
+                disabled={lidarBusy}
+                onChange={(e) => e.target.files[0] && onLidarUpload(e.target.files[0])}
+              />
+            </label>
+          </>
         )}
       </div>
 

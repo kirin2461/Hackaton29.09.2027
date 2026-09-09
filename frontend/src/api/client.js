@@ -122,3 +122,21 @@ export const postLoadBbox = (payload) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+
+/** Статус лидарного рельефа (активен ли, сколько точек). */
+export const fetchLidarStatus = () => request('/api/terrain/lidar/status');
+
+/** Встроенный демо-лидар (Autzen Stadium, USGS 3DEP). */
+export const postLidarDemo = () =>
+  request('/api/terrain/lidar/demo', { method: 'POST' });
+
+/** Возврат к процедурному рельефу. */
+export const postLidarClear = () =>
+  request('/api/terrain/lidar/clear', { method: 'POST' });
+
+/** Загрузка своего LAS/LAZ файла (multipart). */
+export const postLidarUpload = (file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return request('/api/terrain/lidar/upload', { method: 'POST', body: form });
+};

@@ -11,6 +11,7 @@ import Toolbar from './components/Toolbar.jsx';
 import {
   fetchHealth, fetchLayers, fetchTerrainMesh, fetchNetworkStats,
   fetchPresets, postRoute, postValidate, postSave, postScan, postLoadBbox,
+  fetchLidarStatus, postLidarDemo, postLidarClear, postLidarUpload,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
 import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
@@ -55,6 +56,11 @@ export default function App() {
   const [presets, setPresets] = useState([]);
   const [districtLoading, setDistrictLoading] = useState(false);
 
+  // Лидарный рельеф (LAS/LAZ) и облако точек.
+  const [lidarStatus, setLidarStatus] = useState(null);
+  const [lidarBusy, setLidarBusy] = useState(false);
+  const [showCloud, setShowCloud] = useState(false);
+
   // ---------- загрузка данных при старте ----------
   useEffect(() => {
     fetchHealth()
@@ -75,6 +81,10 @@ export default function App() {
     fetchPresets()
       .then((d) => setPresets(d.presets ?? []))
       .catch(() => setPresets([]));
+
+    fetchLidarStatus()
+      .then(setLidarStatus)
+      .catch(() => setLidarStatus(null));
   }, []);
 
   // ---------- валидация трассы (День 12-13) ----------
@@ -314,6 +324,32 @@ export default function App() {
       .finally(() => setDistrictLoading(false));
   }, [handleReset]);
 
+  // ---------- лидар: демо / загрузка / сброс ----------
+  // После смены рельефа перечитываем меш — здания, дороги и трубы
+  // сами пересадятся на новые высоты (эффект драпировки по meshData).
+  const applyLidar = useCallback((promise) => {
+    setLidarBusy(true);
+    setError(null);
+    promise
+      .then((st) => {
+        setLidarStatus(st);
+        setShowCloud(Boolean(st?.active));
+        return fetchTerrainMesh();
+      })
+      .then(setMeshData)
+      .catch((e) => setError(e.message))
+      .finally(() => setLidarBusy(false));
+  }, []);
+
+  const handleLidarDemo = useCallback(
+    () => applyLidar(postLidarDemo()), [applyLidar]);
+  const handleLidarUpload = useCallback(
+    (file) => applyLidar(postLidarUpload(file)), [applyLidar]);
+  const handleLidarClear = useCallback(() => {
+    setShowCloud(false);
+    applyLidar(postLidarClear());
+  }, [applyLidar]);
+
   const networks = layersData?.layers?.heat_networks ?? [];
 
   return (
@@ -356,6 +392,13 @@ export default function App() {
         presets={presets}
         districtLoading={districtLoading}
         onLoadDistrict={handleLoadDistrict}
+        lidarStatus={lidarStatus}
+        lidarBusy={lidarBusy}
+        showCloud={showCloud}
+        setShowCloud={setShowCloud}
+        onLidarDemo={handleLidarDemo}
+        onLidarUpload={handleLidarUpload}
+        onLidarClear={handleLidarClear}
       />
       <MapScene
         meshData={meshData}
@@ -375,6 +418,7 @@ export default function App() {
         onPathChange={handlePathChange}
         siteScan={siteScan}
         xray={xray}
+        showCloud={showCloud && Boolean(lidarStatus?.active)}
       />
     </div>
   );

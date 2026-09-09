@@ -22,7 +22,7 @@ const NODE_END_COLOR = 0x9fb3d1;  // концевые узлы (врезка/з�
 export default function MapScene({
   meshData, layersData, mode, floors, buildingSize,
   newBuilding, selectedNetworkId, routes, selectedRouteKey,
-  editPath, validation, siteScan, xray,
+  editPath, validation, siteScan, xray, showCloud,
   onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
 }) {
   const mountRef = useRef(null);
@@ -395,9 +395,11 @@ export default function MapScene({
         }
       });
     };
+    // Облако точек читается лучше на приглушённом рельефе.
+    const dimForCloud = (opacity) => setOpacity(terrain, opacity);
 
     if (!xray) {
-      setOpacity(terrain, 1);
+      dimForCloud(showCloud ? 0.28 : 1);
       setOpacity(buildingsG, 1);
       setOpacity(roadsG, 1);
       if (trees) trees.visible = true;
@@ -408,6 +410,7 @@ export default function MapScene({
     setOpacity(terrain, 0.22);
     setOpacity(buildingsG, 0.3);
     setOpacity(roadsG, 0.25);
+    dimForCloud(0.22); // рентген приоритетнее облака
     if (trees) trees.visible = false;
     if (controls) controls.maxPolarAngle = Math.PI * 0.8; // заглянуть снизу
 
@@ -434,7 +437,58 @@ export default function MapScene({
     const v = routes?.find((x) => x.key === selectedRouteKey);
     if (v) addUnderground(v.path, 3.0, 0x00e5ff, 2.0);
     scene.add(group);
-  }, [xray, layersData, routes, selectedRouteKey, meshData]);
+  }, [xray, showCloud, layersData, routes, selectedRouteKey, meshData]);
+
+  // ---------- облако лидарных точек (вау-режим) ----------
+  useEffect(() => {
+    const { scene } = stateRef.current;
+    if (!scene) return;
+    const old = scene.getObjectByName('lidar-cloud');
+    if (old) {
+      old.geometry.dispose();
+      old.material.dispose();
+      scene.remove(old);
+    }
+    if (!showCloud) return;
+
+    let cancelled = false;
+    fetch('/api/terrain/lidar/cloud.bin')
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+      .then((buf) => {
+        if (cancelled) return;
+        const dv = new DataView(buf);
+        const n = dv.getUint32(0, true);
+        const pos = new Float32Array(buf, 4, n * 3);
+        const col = new Uint8Array(buf, 4 + n * 12, n * 3);
+
+        // Карта (x, y, z) -> сцена (x, z, -y), как в buildTerrainMesh.
+        const positions = new Float32Array(n * 3);
+        const colors = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+          positions[i * 3] = pos[i * 3];
+          positions[i * 3 + 1] = pos[i * 3 + 2];
+          positions[i * 3 + 2] = -pos[i * 3 + 1];
+          colors[i * 3] = col[i * 3] / 255;
+          colors[i * 3 + 1] = col[i * 3 + 1] / 255;
+          colors[i * 3 + 2] = col[i * 3 + 2] / 255;
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const points = new THREE.Points(
+          geometry,
+          new THREE.PointsMaterial({
+            size: 2.2,
+            vertexColors: true,
+            sizeAttenuation: true,
+          }),
+        );
+        points.name = 'lidar-cloud';
+        scene.add(points);
+      })
+      .catch(() => {}); // облако опционально — молча пропускаем сбой
+    return () => { cancelled = true; };
+  }, [showCloud, meshData]);
 
   return <div ref={mountRef} className="scene-mount" />;
 }

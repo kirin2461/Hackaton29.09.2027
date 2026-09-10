@@ -62,8 +62,13 @@ def _post_json(url: str, payload: dict, timeout: int = 45) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def nspd_intersects(category_id: int, bbox: dict[str, float]) -> list[dict]:
-    """Объекты категории НСПД, пересекающиеся с bbox (WGS84)."""
+def nspd_payload(category_id: int, bbox: dict[str, float]) -> dict:
+    """Тело запроса к /api/geoportal/v1/intersects.
+
+    Вынесено отдельно, чтобы браузерный обход Qrator (запрос с домашнего
+    IP прямо из вкладки пользователя) использовал ровно тот же формат,
+    что и серверный коннектор.
+    """
     geom = {
         "type": "Polygon",
         "coordinates": [[
@@ -75,11 +80,16 @@ def nspd_intersects(category_id: int, bbox: dict[str, float]) -> list[dict]:
         ]],
         "crs": {"type": "name", "properties": {"name": "EPSG:4326"}},
     }
-    payload = {"categories": [{"id": category_id}],
-               "geom": {"type": "FeatureCollection",
-                        "features": [{"geometry": geom, "type": "Feature",
-                                      "properties": {}}]}}
-    data = _hard_call(_post_json, NSPD_INTERSECTS, payload)
+    return {"categories": [{"id": category_id}],
+            "geom": {"type": "FeatureCollection",
+                     "features": [{"geometry": geom, "type": "Feature",
+                                   "properties": {}}]}}
+
+
+def nspd_intersects(category_id: int, bbox: dict[str, float]) -> list[dict]:
+    """Объекты категории НСПД, пересекающиеся с bbox (WGS84)."""
+    data = _hard_call(_post_json, NSPD_INTERSECTS,
+                      nspd_payload(category_id, bbox))
     return (data.get("data") or {}).get("features") or []
 
 

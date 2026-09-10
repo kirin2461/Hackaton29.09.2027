@@ -212,3 +212,15 @@ button.save:disabled { opacity: 0.45; cursor: not-allowed; }
   line-height: 18px;
   min-height: 18px;
 }
+
+/* ---------- Профиль трассы (разрез) ---------- */
+.profile svg {
+  display: block;
+  background: #10151d;
+  border-radius: 6px;
+}
+
+.profile .axis-label {
+  fill: #8a8578;
+  font-size: 9px;
+}

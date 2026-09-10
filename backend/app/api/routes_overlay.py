@@ -122,6 +122,38 @@ def overlay_add_nspd(payload: NspdIn, parser: GISParser = Depends(get_parser)):
             "hint": _NSPD_MANUAL_HINT if errors else None}
 
 
+@router.get("/nspd/payload")
+def overlay_nspd_payload(layers: str, parser: GISParser = Depends(get_parser)):
+    """Готовые тела запросов к НСПД — для браузерного обхода Qrator.
+
+    Геопортал блокирует IP дата-центров, но НЕ домашние IP. Поэтому
+    фронтенд может выполнить тот же запрос прямо из браузера
+    пользователя (fetch на nspd.gov.ru, при CORS-отказе — через
+    публичный CORS-прокси), а результат загрузить обратно через
+    POST /api/overlay/geojson. Здесь мы лишь собираем корректные
+    payload-ы по охвату текущей карты.
+
+    layers — ключи через запятую: nspd_zdaniya,nspd_sooruzheniya,...
+    """
+    keys = [k.strip() for k in layers.split(",") if k.strip()]
+    unknown = [k for k in keys if k not in overlays.NSPD_LAYERS]
+    if unknown:
+        raise HTTPException(422, f"Неизвестные слои НСПД: {unknown}")
+    if not keys:
+        raise HTTPException(422, "Не выбрано ни одного слоя")
+    origin, bounds = _scene_geometry(parser)
+    bbox = overlays.scene_bounds_wgs84(tuple(origin), bounds)
+    return {
+        "url": sources.NSPD_INTERSECTS,
+        "requests": [{
+            "key": k,
+            "name": overlays.NSPD_LAYERS[k]["title"],
+            "color": overlays.NSPD_LAYERS[k]["color"],
+            "body": sources.nspd_payload(overlays.NSPD_LAYERS[k]["category"], bbox),
+        } for k in keys],
+    }
+
+
 @router.post("/datamos")
 def overlay_add_datamos(payload: DataMosIn):
     """Живой запрос к data.mos.ru: точечный набор → оверлей на карте."""

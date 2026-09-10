@@ -80,6 +80,12 @@ def add_overlay(name: str, source: str, color: str,
             "count": len(features)}
 
 
+def list_overlays_raw() -> list[dict[str, Any]]:
+    """Сырые оверлеи в WGS84 (для серверных проверок — например,
+    попадания объекта в охранную зону)."""
+    return list(_OVERLAYS.values())
+
+
 def remove_overlay(oid: str) -> bool:
     return _OVERLAYS.pop(oid, None) is not None
 

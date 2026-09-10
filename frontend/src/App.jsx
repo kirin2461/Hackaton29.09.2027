@@ -15,6 +15,7 @@ import {
   postPareto, postReportPdf,
   fetchOverlays, postGeojsonOverlay, deleteOverlay,
   postNspdOverlay, postDatamosOverlay,
+  postRouteProfile, postObjectPassport, fetchNspdPayload,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
 import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
@@ -63,6 +64,13 @@ export default function App() {
   const [paretoData, setParetoData] = useState(null);
   const [paretoBusy, setParetoBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+
+  // Геодезия: рулетка, профиль трассы, паспорт объекта, свободная камера.
+  const [measurePoints, setMeasurePoints] = useState([]);
+  const [profile, setProfile] = useState(null);
+  const [passport, setPassport] = useState(null);
+  const [freeCamera, setFreeCamera] = useState(false);
+  const [nspdBrowserBusy, setNspdBrowserBusy] = useState(false);
 
   // Оверлеи «всё в одну карту»: НСПД, data.mos.ru, свой GeoJSON.
   const [overlays, setOverlays] = useState([]);
@@ -241,6 +249,9 @@ export default function App() {
     setError(null);
     setMode('view');
     setParetoData(null);
+    setMeasurePoints([]);
+    setPassport(null);
+    setProfile(null);
   }, []);
 
   // ---------- демо-сценарий в один клик (для показа жюри) ----------
@@ -483,6 +494,106 @@ export default function App() {
     });
   }, []);
 
+  // ---------- геодезия: рулетка ----------
+  const handleMeasurePoint = useCallback(([x, y]) => {
+    setMeasurePoints((prev) => [...prev, [x, y]]);
+  }, []);
+
+  const handleMeasureClear = useCallback(() => setMeasurePoints([]), []);
+
+  // ---------- паспорт объекта ----------
+  const handleObjectClick = useCallback(([x, y]) => {
+    setError(null);
+    postObjectPassport(x, y)
+      .then(setPassport)
+      .catch((e) => { setPassport(null); setError(e.message); });
+  }, []);
+
+  // Подключить выбранный объект к ближайшей теплосети:
+  // его контур становится Точкой Б, сеть из паспорта — Точкой А.
+  const handleConnectObject = useCallback(() => {
+    if (!passport?.network) return;
+    const f = layersData?.layers?.buildings?.find((b) => b.id === passport.id);
+    if (!f) return;
+    const building = {
+      polygon: f.coordinates,
+      floors: passport.floors,
+      center: passport.centroid,
+    };
+    setNewBuilding(building);
+    setSelectedNetworkId(passport.network.id);
+    setRouteData(null);
+    setValidation(null);
+    setSavedId(null);
+    setMode('view');
+    runRouting(building, passport.network.id, turnPenalty, roadMult);
+  }, [passport, layersData, turnPenalty, roadMult, runRouting]);
+
+  // ---------- профиль трассы (разрез) ----------
+  // Пересчитывается вместе со сметой: та же трасса, та же геодезия.
+  useEffect(() => {
+    const path = (mode === 'editRoute' && editPath)
+      ? editPath
+      : routeData?.variants?.find((x) => x.key === selectedRouteKey)?.path;
+    if (!path || path.length < 2) { setProfile(null); return; }
+    let alive = true;
+    postRouteProfile(path)
+      .then((d) => { if (alive) setProfile(d); })
+      .catch(() => { if (alive) setProfile(null); });
+    return () => { alive = false; };
+  }, [routeData, selectedRouteKey, editPath, mode]);
+
+  // ---------- обход блокировки НСПД: запрос из браузера ----------
+  // Сервер в дата-центре блокируется Qrator, домашний IP пользователя —
+  // нет. Берём у бэкенда готовые тела запросов и шлём их из вкладки;
+  // если CORS не пускает — через публичный CORS-прокси.
+  const handleNspdBrowser = useCallback(async (layerKeys) => {
+    setNspdBrowserBusy(true);
+    setError(null);
+    try {
+      const { url, requests } = await fetchNspdPayload(layerKeys);
+      const results = [];
+      for (const req of requests) {
+        const body = JSON.stringify(req.body);
+        let feats = null;
+        const targets = [
+          url, // прямой запрос: работает с домашнего IP
+          `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+          `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+        ];
+        for (const target of targets) {
+          try {
+            const resp = await fetch(target, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body,
+            });
+            if (!resp.ok) continue;
+            feats = (await resp.json())?.data?.features ?? [];
+            break;
+          } catch { /* CORS/сеть — пробуем следующий путь */ }
+        }
+        if (feats) {
+          await postGeojsonOverlay(req.name, req.color,
+            { type: 'FeatureCollection', features: feats }, req.key);
+          results.push(`${req.name}: ${feats.length}`);
+        } else {
+          results.push(`${req.name}: не удалось`);
+        }
+      }
+      await refreshOverlays();
+      setError(results.every((r) => r.endsWith('не удалось'))
+        ? 'НСПД не ответил даже из браузера. Остаётся ручная выгрузка '
+          + 'GeoJSON с nspd.gov.ru (кнопка «…или свой GeoJSON»).'
+        : null);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setNspdBrowserBusy(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshOverlays]);
+
   const networks = layersData?.layers?.heat_networks ?? [];
 
   return (
@@ -545,6 +656,15 @@ export default function App() {
         onGeojsonFile={handleGeojsonFile}
         onOverlayDelete={handleOverlayDelete}
         onOverlayToggle={handleOverlayToggle}
+        measurePoints={measurePoints}
+        onMeasureClear={handleMeasureClear}
+        passport={passport}
+        onConnectObject={handleConnectObject}
+        profile={profile}
+        freeCamera={freeCamera}
+        onToggleFreeCamera={() => setFreeCamera((v) => !v)}
+        nspdBrowserBusy={nspdBrowserBusy}
+        onNspdBrowser={handleNspdBrowser}
       />
       <MapScene
         meshData={meshData}
@@ -567,6 +687,12 @@ export default function App() {
         showCloud={showCloud && Boolean(lidarStatus?.active)}
         overlays={overlays}
         hiddenOverlays={hiddenOverlays}
+        measurePoints={measurePoints}
+        selectedObject={layersData?.layers?.buildings
+          ?.find((b) => b.id === passport?.id)?.coordinates ?? null}
+        freeCamera={freeCamera}
+        onMeasurePoint={handleMeasurePoint}
+        onObjectClick={handleObjectClick}
       />
     </div>
   );

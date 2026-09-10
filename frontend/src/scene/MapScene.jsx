@@ -25,13 +25,18 @@ export default function MapScene({
   newBuilding, selectedNetworkId, routes, selectedRouteKey,
   editPath, validation, siteScan, xray, showCloud,
   overlays, hiddenOverlays,
+  measurePoints, selectedObject, freeCamera,
   onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
+  onMeasurePoint, onObjectClick,
 }) {
   const mountRef = useRef(null);
   const stateRef = useRef({}); // «ручка» к живым объектам сцены между эффектами
   const editPathRef = useRef(null); // редактируемая трасса (массив точек)
   const cbRef = useRef({});
-  cbRef.current = { onTerrainClick, onNetworkClick, onRouteClick, onPathChange };
+  cbRef.current = {
+    onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
+    onMeasurePoint, onObjectClick,
+  };
 
   // ---------- однократная инициализация сцены ----------
   useEffect(() => {
@@ -332,6 +337,15 @@ export default function MapScene({
         const hits = raycaster.intersectObjects(group.children, false);
         const hit = hits.find((h) => h.object.userData.type === 'heat');
         if (hit) cb.onNetworkClick?.(hit.object.userData.id);
+      } else if (mode === 'measure' || mode === 'object') {
+        // Геодезия и паспорт объекта: клик по рельефу → координаты карты.
+        const terrain = scene.getObjectByName('terrain');
+        if (!terrain) return;
+        const [hit] = raycaster.intersectObject(terrain, false);
+        if (!hit) return;
+        const mapPoint = [hit.point.x, -hit.point.z];
+        if (mode === 'measure') cb.onMeasurePoint?.(mapPoint);
+        else cb.onObjectClick?.(mapPoint);
       } else if (mode === 'addBuilding') {
         const terrain = scene.getObjectByName('terrain');
         if (!terrain) return;
@@ -353,6 +367,88 @@ export default function MapScene({
     renderer.domElement.addEventListener('click', onClick);
     return () => renderer.domElement.removeEventListener('click', onClick);
   }, [mode, floors, buildingSize]);
+
+
+  // ---------- геодезия: линия измерения и маркеры точек ----------
+  useEffect(() => {
+    const { scene, sampler } = stateRef.current;
+    if (!scene) return;
+    const old = scene.getObjectByName('measure');
+    if (old) scene.remove(old);
+    if (!measurePoints?.length) return;
+    const group = new THREE.Group();
+    group.name = 'measure';
+    const mat = new THREE.LineBasicMaterial({ color: 0xffeaa7 });
+    const pts = measurePoints.map(([x, y]) => {
+      const g = sampler ? sampler(x, y) : 0;
+      return mapToScene(x, y, g + 2.5);
+    });
+    if (pts.length >= 2) {
+      group.add(new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(pts), mat));
+    }
+    const markerGeom = new THREE.SphereGeometry(2.2, 10, 8);
+    const markerMat = new THREE.MeshBasicMaterial({ color: 0xffeaa7 });
+    pts.forEach((p) => {
+      const mk = new THREE.Mesh(markerGeom, markerMat);
+      mk.position.copy(p);
+      group.add(mk);
+    });
+    scene.add(group);
+  }, [measurePoints, meshData]);
+
+  // ---------- паспорт: контур выбранного объекта ----------
+  useEffect(() => {
+    const { scene, sampler } = stateRef.current;
+    if (!scene) return;
+    const old = scene.getObjectByName('selected-object');
+    if (old) scene.remove(old);
+    if (!selectedObject?.length) return;
+    const mat = new THREE.LineBasicMaterial({ color: 0x00e5ff, linewidth: 2 });
+    const pts = selectedObject.map(([x, y]) => {
+      const g = sampler ? sampler(x, y) : 0;
+      return mapToScene(x, y, g + 3.0);
+    });
+    const loop = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(pts), mat);
+    loop.name = 'selected-object';
+    scene.add(loop);
+  }, [selectedObject, meshData]);
+
+  // ---------- свободная камера: pan без закреплённой точки + WASD ----------
+  useEffect(() => {
+    const { controls, camera } = stateRef.current;
+    if (!controls || !camera) return;
+    controls.enablePan = true; // панорамирование правой кнопкой — всегда
+    controls.maxPolarAngle = freeCamera ? Math.PI * 0.95 : Math.PI * 0.49;
+    controls.screenSpacePanning = Boolean(freeCamera);
+    if (!freeCamera) return undefined;
+
+    // WASD / стрелки: двигаем и камеру, и цель — карта «плывёт».
+    const STEP = 40;
+    const onKey = (e) => {
+      if (e.target instanceof HTMLInputElement) return; // не красть ввод из полей
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      dir.y = 0;
+      dir.normalize();
+      const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0));
+      const move = new THREE.Vector3();
+      const k = e.key.toLowerCase();
+      if (k === 'w' || k === 'arrowup') move.add(dir);
+      else if (k === 's' || k === 'arrowdown') move.sub(dir);
+      else if (k === 'a' || k === 'arrowleft') move.sub(right);
+      else if (k === 'd' || k === 'arrowright') move.add(right);
+      else return;
+      e.preventDefault();
+      move.multiplyScalar(STEP);
+      camera.position.add(move);
+      controls.target.add(move);
+      controls.update();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [freeCamera]);
 
   // ---------- маркеры топ-площадок (обратная задача) ----------
   useEffect(() => {

@@ -209,3 +209,29 @@ export const postDatamosOverlay = (datasetId, apiKey, limit, name, color) =>
       dataset_id: datasetId, api_key: apiKey, limit, name, color,
     }),
   });
+
+// ---------- Геодезия: профиль трассы, паспорт объекта, обход НСПД ----------
+
+/** Продольный профиль (разрез) вдоль трассы: рельеф, труба, переходы. */
+export const postRouteProfile = (path, depthM = 3.0) =>
+  request('/api/route/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, depth_m: depthM }),
+  });
+
+/** Паспорт объекта по клику на карте (x, y — координаты сцены). */
+export const postObjectPassport = (x, y) =>
+  request('/api/object/passport', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  });
+
+/**
+ * Готовые тела запросов к НСПД — для обхода блокировки Qrator:
+ * запрос уходит из браузера пользователя (домашний IP не блокируется),
+ * результат возвращается на сервер через postGeojsonOverlay.
+ */
+export const fetchNspdPayload = (layers) =>
+  request(`/api/overlay/nspd/payload?layers=${layers.join(',')}`);

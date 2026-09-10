@@ -1,6 +1,7 @@
 // Панель инструментов.
 import { useState } from 'react';
 import ParetoChart from './ParetoChart.jsx';
+import RouteProfile from './RouteProfile.jsx';
 // Спринт 2 — варианты трассы A*, бегунки штрафов.
 // Спринт 3 — смета/гидравлика, редактирование трубы, сохранение.
 // Спринт 4 — экспорт сцены в .glb.
@@ -20,6 +21,8 @@ export default function Toolbar({
   paretoData, paretoBusy, onPareto, pdfBusy, onReportPdf,
   overlays, hiddenOverlays, overlayBusy, onNspd, onDatamos,
   onGeojsonFile, onOverlayDelete, onOverlayToggle,
+  measurePoints, onMeasureClear, passport, onConnectObject,
+  profile, freeCamera, onToggleFreeCamera, nspdBrowserBusy, onNspdBrowser,
 }) {
   // Локальные поля произвольного bbox (градусы WGS84).
   const [bbox, setBbox] = useState({ min_lat: '', min_lon: '', max_lat: '', max_lon: '' });
@@ -30,6 +33,12 @@ export default function Toolbar({
   const [dmDataset, setDmDataset] = useState('');
   const [dmKey, setDmKey] = useState('');
   const dmReady = dmDataset.trim() !== '' && dmKey.trim() !== '';
+  // Рулетка: длина ломаной и длины сегментов.
+  const measureSegs = (measurePoints ?? []).slice(1).map((pt, i) => {
+    const [ax, ay] = measurePoints[i];
+    return Math.hypot(pt[0] - ax, pt[1] - ay);
+  });
+  const measureTotal = measureSegs.reduce((a, b) => a + b, 0);
   const collision = Boolean(validation?.collision);
 
   return (
@@ -58,6 +67,34 @@ export default function Toolbar({
         >
           ⌁ Теплосеть (Точка А)
         </button>
+        <button
+          className={mode === 'object' ? 'active' : ''}
+          onClick={() => setMode('object')}
+        >
+          🛈 Объект (паспорт)
+        </button>
+        <button
+          className={mode === 'measure' ? 'active' : ''}
+          onClick={() => setMode('measure')}
+        >
+          📐 Измерение
+        </button>
+      </div>
+
+      <div className="group">
+        <button
+          className={freeCamera ? 'active' : ''}
+          onClick={onToggleFreeCamera}
+        >
+          {freeCamera ? '🕹 Свободная камера: ВКЛ' : '🕹 Свободная камера'}
+        </button>
+        {freeCamera && (
+          <p className="hint">
+            Карта двигается без закреплённой точки: WASD / стрелки —
+            полёт, правая кнопка мыши — панорама, колесо — зум.
+            Наклон не ограничен.
+          </p>
+        )}
       </div>
 
       {mode === 'addBuilding' && (
@@ -94,6 +131,53 @@ export default function Toolbar({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {mode === 'measure' && (
+        <div className="group result">
+          <h2>Геодезия (рулетка)</h2>
+          <p className="hint">Кликайте по карте — точки соединяются в ломаную.</p>
+          {measurePoints.length > 0 && (
+            <>
+              <p>Точек: {measurePoints.length}</p>
+              {measureSegs.map((d, i) => (
+                <p key={i}>Пролёт {i + 1}: {d.toFixed(1)} м</p>
+              ))}
+              <p className="cost">Σ {measureTotal.toFixed(1)} м</p>
+              <button onClick={onMeasureClear}>Очистить</button>
+            </>
+          )}
+        </div>
+      )}
+
+      {passport && (
+        <div className="group result">
+          <h2>Паспорт объекта</h2>
+          <p><b>{passport.name}</b></p>
+          <p>Этажность: {passport.floors} · площадь: {passport.area_m2} м²</p>
+          <p>Отметка земли: {passport.ground_z_m} м</p>
+          <p>Расчётная тепловая нагрузка: {passport.heat_load_kw} кВт</p>
+          {passport.network && (
+            <>
+              <h2>Коммуникации</h2>
+              <p className="impact">
+                Ближайшая теплосеть: {passport.network.name} —{' '}
+                {passport.network.distance_m} м
+              </p>
+            </>
+          )}
+          {passport.roads.length > 0 && (
+            <p>Дороги рядом: {passport.roads.map((r) => r.name).join(', ')}</p>
+          )}
+          {passport.zones.length > 0 && (
+            <p className="error">⚠ Охранные зоны: {passport.zones.join('; ')}</p>
+          )}
+          {passport.network && (
+            <button onClick={onConnectObject}>
+              ⌁ Проложить трассу к этому объекту
+            </button>
+          )}
         </div>
       )}
 
@@ -215,6 +299,13 @@ export default function Toolbar({
               ⚠ Трасса пересекает здания: {validation.collision_buildings.join(', ')}
             </p>
           )}
+        </div>
+      )}
+
+      {profile && (
+        <div className="group result">
+          <h2>Профиль трассы (разрез)</h2>
+          <RouteProfile profile={profile} />
         </div>
       )}
 
@@ -396,15 +487,24 @@ export default function Toolbar({
       <div className="group">
         <h2>Источники (всё в одну карту)</h2>
         <button
+          disabled={nspdBrowserBusy}
+          title="Запрос уходит из вашего браузера — домашний IP не блокируется Qrator"
+          onClick={() => onNspdBrowser(['nspd_zdaniya', 'nspd_sooruzheniya', 'nspd_zouit'])}
+        >
+          {nspdBrowserBusy ? '⏳ Запрашиваю НСПД из браузера…'
+            : '🏛 НСПД (ЕГРН): здания, сооружения, ЗОУИТ'}
+        </button>
+        <button
           disabled={overlayBusy}
-          title="Здания, сооружения, ЗОУИТ и красные линии ЕГРН по охвату карты"
+          title="Серверный запрос — с боевого сервера Qrator обычно блокирует"
           onClick={() => onNspd(['nspd_zdaniya', 'nspd_sooruzheniya', 'nspd_zouit'])}
         >
-          {overlayBusy ? '⏳ Загружаю…' : '🏛 НСПД (ЕГРН): здания, сооружения, ЗОУИТ'}
+          {overlayBusy ? '⏳ Загружаю…' : '🏛 НСПД через сервер'}
         </button>
         <p className="hint">
-          Если nspd.gov.ru не отвечает (защита Qrator) — выгрузите GeoJSON
-          с домашнего IP и загрузите файл ниже.
+          Обход блокировки: первая кнопка шлёт запрос прямо из браузера
+          (Qrator блокирует IP дата-центров, но не домашние). Если и это
+          не помогло — выгрузите GeoJSON с nspd.gov.ru и загрузите ниже.
         </p>
         <div className="bbox-grid">
           <input

@@ -10,6 +10,7 @@ import MapScene from './scene/MapScene.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import PassportWindow from './components/PassportWindow.jsx';
 import GeoWindow from './components/GeoWindow.jsx';
+import ProviderMapWindow from './components/ProviderMapWindow.jsx';
 import {
   fetchHealth, fetchLayers, fetchTerrainMesh, fetchNetworkStats,
   fetchPresets, postRoute, postValidate, postSave, postScan, postLoadBbox,
@@ -72,6 +73,10 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [passport, setPassport] = useState(null);
   const [soil, setSoil] = useState(null); // зонд ЦМР в последней точке клика
+
+  // Синхронная карта Яндекс/2ГИС (официальные виджеты, своя панель).
+  const [providerMap, setProviderMap] = useState(null); // 'yandex' | '2gis' | null
+  const camTargetRef = useRef(null); // MapScene кладёт сюда геттер точки камеры
   const [freeCamera, setFreeCamera] = useState(false);
   const [nspdBrowserBusy, setNspdBrowserBusy] = useState(false);
 
@@ -667,6 +672,8 @@ export default function App() {
         onToggleFreeCamera={() => setFreeCamera((v) => !v)}
         nspdBrowserBusy={nspdBrowserBusy}
         onNspdBrowser={handleNspdBrowser}
+        providerMap={providerMap}
+        onOpenProviderMap={(p) => setProviderMap((cur) => (cur === p ? null : p))}
       />
       <MapScene
         meshData={meshData}
@@ -695,6 +702,7 @@ export default function App() {
         freeCamera={freeCamera}
         onMeasurePoint={handleMeasurePoint}
         onObjectClick={handleObjectClick}
+        camTargetRef={camTargetRef}
       />
       <PassportWindow
         passport={passport}
@@ -707,6 +715,14 @@ export default function App() {
         onMeasureClear={handleMeasureClear}
         onClose={() => { setMeasurePoints([]); setSoil(null); }}
       />
+      {providerMap && (
+        <ProviderMapWindow
+          provider={providerMap}
+          onProviderChange={setProviderMap}
+          getCameraTarget={camTargetRef.current}
+          onClose={() => setProviderMap(null)}
+        />
+      )}
     </div>
   );
 }

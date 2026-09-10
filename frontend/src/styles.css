@@ -312,3 +312,40 @@ button.save:disabled { opacity: 0.45; cursor: not-allowed; }
 .geo-coord { color: #5c6675; font-size: 11px; }
 
 .geo-row button { padding: 3px 10px; font-size: 12px; min-height: unset; }
+
+/* ---------- Окно синхронной карты Яндекс/2ГИС ---------- */
+.float-map {
+  right: 20px;
+  bottom: 20px;
+  width: 420px;
+}
+
+.map-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-right: 24px;
+}
+
+.map-tabs button {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  min-height: unset;
+}
+
+.map-key-form input {
+  width: 100%;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+}
+
+.map-key-form button { width: 100%; }
+
+.provider-map {
+  width: 100%;
+  height: 280px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0b0f16;
+}

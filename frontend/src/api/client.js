@@ -243,3 +243,16 @@ export const postTerrainProbe = (x, y) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ x, y }),
   });
+
+// ---------- Синхронная карта Яндекс/2ГИС (официальные JS API) ----------
+
+/** Центр и охват текущего района в WGS84. */
+export const fetchGeoCenter = () => request('/api/map/geo_center');
+
+/** Координаты сцены -> WGS84 (точка, куда смотрит камера). */
+export const postToWgs84 = (x, y) =>
+  request('/api/map/to_wgs84', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  });

@@ -22,6 +22,7 @@ export default function Toolbar({
   overlays, hiddenOverlays, overlayBusy, onNspd, onDatamos,
   onGeojsonFile, onOverlayDelete, onOverlayToggle,
   profile, freeCamera, onToggleFreeCamera, nspdBrowserBusy, onNspdBrowser,
+  providerMap, onOpenProviderMap,
 }) {
   // Локальные поля произвольного bbox (градусы WGS84).
   const [bbox, setBbox] = useState({ min_lat: '', min_lon: '', max_lat: '', max_lon: '' });
@@ -510,6 +511,26 @@ export default function Toolbar({
             ))}
           </ul>
         )}
+      </div>
+
+      <div className="group">
+        <h2>Точная подложка (Яндекс / 2ГИС)</h2>
+        <button
+          className={providerMap === 'yandex' ? 'active' : ''}
+          onClick={() => onOpenProviderMap('yandex')}
+        >
+          🗺 Яндекс Карты
+        </button>
+        <button
+          className={providerMap === '2gis' ? 'active' : ''}
+          onClick={() => onOpenProviderMap('2gis')}
+        >
+          🗺 2ГИС
+        </button>
+        <p className="hint">
+          Официальные виджеты поверх сцены: точная детализация для сверки
+          с 3D-моделью. Геометрия не извлекается (лицензии провайдеров).
+        </p>
       </div>
 
       <button className="demo" onClick={onDemo}>▶ Демо-сценарий</button>

@@ -27,7 +27,7 @@ export default function MapScene({
   overlays, hiddenOverlays,
   measurePoints, selectedObject, freeCamera,
   onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
-  onMeasurePoint, onObjectClick,
+  onMeasurePoint, onObjectClick, camTargetRef,
 }) {
   const mountRef = useRef(null);
   const stateRef = useRef({}); // «ручка» к живым объектам сцены между эффектами
@@ -35,7 +35,7 @@ export default function MapScene({
   const cbRef = useRef({});
   cbRef.current = {
     onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
-    onMeasurePoint, onObjectClick,
+    onMeasurePoint, onObjectClick, camTargetRef,
   };
 
   // ---------- однократная инициализация сцены ----------
@@ -414,6 +414,17 @@ export default function MapScene({
     loop.name = 'selected-object';
     scene.add(loop);
   }, [selectedObject, meshData]);
+
+  // ---------- геттер точки камеры для синхронной карты ----------
+  useEffect(() => {
+    if (!camTargetRef) return;
+    camTargetRef.current = () => {
+      const { controls } = stateRef.current;
+      if (!controls) return [0, 0];
+      // Сцена -> карта: x = target.x, y = -target.z
+      return [controls.target.x, -controls.target.z];
+    };
+  }, [camTargetRef]);
 
   // ---------- свободная камера: pan без закреплённой точки + WASD ----------
   useEffect(() => {

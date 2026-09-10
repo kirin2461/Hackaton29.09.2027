@@ -141,6 +141,41 @@ def terrain_probe(payload: ProbeIn,
     }
 
 
+@router.get("/map/geo_center")
+def map_geo_center(parser: GISParser = Depends(get_parser)):
+    """Центр и охват текущего района в WGS84.
+
+    Нужен окну синхронной карты (Яндекс/2ГИС), чтобы открыть виджет
+    ровно на той же территории, что загружена в 3D-сцене.
+    """
+    resp = parser.to_response()
+    if not resp.get("bounds"):
+        raise HTTPException(503, "Карта не загружена")
+    origin = tuple(resp["origin"])
+    bbox = overlays.scene_bounds_wgs84(origin, resp["bounds"])
+    return {
+        "center": [(bbox["min_lon"] + bbox["max_lon"]) / 2,
+                   (bbox["min_lat"] + bbox["max_lat"]) / 2],
+        "bbox": bbox,
+    }
+
+
+class ToWgs84In(BaseModel):
+    x: float
+    y: float
+
+
+@router.post("/map/to_wgs84")
+def map_to_wgs84(payload: ToWgs84In, parser: GISParser = Depends(get_parser)):
+    """Координаты сцены -> WGS84 (для синхронизации окна карты
+    с точкой, куда смотрит 3D-камера)."""
+    resp = parser.to_response()
+    origin = tuple(resp.get("origin") or (0.0, 0.0))
+    lon, lat = overlays._to_wgs84.transform(origin[0] + payload.x,
+                                            origin[1] + payload.y)
+    return {"lon": lon, "lat": lat}
+
+
 # ---------- Паспорт объекта ----------
 
 class PassportIn(BaseModel):

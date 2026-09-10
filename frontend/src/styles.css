@@ -224,3 +224,91 @@ button.save:disabled { opacity: 0.45; cursor: not-allowed; }
   fill: #8a8578;
   font-size: 9px;
 }
+
+/* ---------- Плавающие окна: паспорт (справа), геодезия/грунт (снизу) ---------- */
+.float-window {
+  position: absolute;
+  z-index: 20;
+  background: rgba(16, 21, 29, 0.92);
+  border: 1px solid #2c3544;
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: #e8e4da;
+  font-size: 13px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+}
+
+.float-right {
+  top: 20px;
+  right: 20px;
+  width: 300px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.float-bottom {
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px;
+  min-width: 420px;
+  max-width: 72vw;
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+}
+
+.float-window h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8a94a6;
+}
+
+.float-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: #8a94a6;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  min-height: unset;
+}
+
+.float-close:hover { color: #fff; }
+
+.pp-title { margin: 0 0 10px; font-size: 15px; }
+
+.pp-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 14px;
+  margin-bottom: 10px;
+}
+
+.pp-grid span { color: #8a94a6; }
+
+.pp-roads { color: #b8b2a4; margin: 6px 0; }
+
+.float-right .impact { color: #7fd4ff; margin: 6px 0; }
+.float-right .impact small { color: #8a94a6; }
+
+.float-right button:not(.float-close) { width: 100%; margin-top: 8px; }
+
+.geo-block h2 { margin-bottom: 6px; }
+
+.geo-row {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.geo-row b { color: #ffeaa7; }
+.geo-coord { color: #5c6675; font-size: 11px; }
+
+.geo-row button { padding: 3px 10px; font-size: 12px; min-height: unset; }

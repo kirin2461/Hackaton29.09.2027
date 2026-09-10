@@ -8,6 +8,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import MapScene from './scene/MapScene.jsx';
 import Toolbar from './components/Toolbar.jsx';
+import PassportWindow from './components/PassportWindow.jsx';
+import GeoWindow from './components/GeoWindow.jsx';
 import {
   fetchHealth, fetchLayers, fetchTerrainMesh, fetchNetworkStats,
   fetchPresets, postRoute, postValidate, postSave, postScan, postLoadBbox,
@@ -15,7 +17,7 @@ import {
   postPareto, postReportPdf,
   fetchOverlays, postGeojsonOverlay, deleteOverlay,
   postNspdOverlay, postDatamosOverlay,
-  postRouteProfile, postObjectPassport, fetchNspdPayload,
+  postRouteProfile, postObjectPassport, fetchNspdPayload, postTerrainProbe,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
 import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
@@ -69,6 +71,7 @@ export default function App() {
   const [measurePoints, setMeasurePoints] = useState([]);
   const [profile, setProfile] = useState(null);
   const [passport, setPassport] = useState(null);
+  const [soil, setSoil] = useState(null); // зонд ЦМР в последней точке клика
   const [freeCamera, setFreeCamera] = useState(false);
   const [nspdBrowserBusy, setNspdBrowserBusy] = useState(false);
 
@@ -252,6 +255,7 @@ export default function App() {
     setMeasurePoints([]);
     setPassport(null);
     setProfile(null);
+    setSoil(null);
   }, []);
 
   // ---------- демо-сценарий в один клик (для показа жюри) ----------
@@ -497,6 +501,7 @@ export default function App() {
   // ---------- геодезия: рулетка ----------
   const handleMeasurePoint = useCallback(([x, y]) => {
     setMeasurePoints((prev) => [...prev, [x, y]]);
+    postTerrainProbe(x, y).then(setSoil).catch(() => {});
   }, []);
 
   const handleMeasureClear = useCallback(() => setMeasurePoints([]), []);
@@ -504,6 +509,7 @@ export default function App() {
   // ---------- паспорт объекта ----------
   const handleObjectClick = useCallback(([x, y]) => {
     setError(null);
+    postTerrainProbe(x, y).then(setSoil).catch(() => {});
     postObjectPassport(x, y)
       .then(setPassport)
       .catch((e) => { setPassport(null); setError(e.message); });
@@ -656,10 +662,6 @@ export default function App() {
         onGeojsonFile={handleGeojsonFile}
         onOverlayDelete={handleOverlayDelete}
         onOverlayToggle={handleOverlayToggle}
-        measurePoints={measurePoints}
-        onMeasureClear={handleMeasureClear}
-        passport={passport}
-        onConnectObject={handleConnectObject}
         profile={profile}
         freeCamera={freeCamera}
         onToggleFreeCamera={() => setFreeCamera((v) => !v)}
@@ -693,6 +695,17 @@ export default function App() {
         freeCamera={freeCamera}
         onMeasurePoint={handleMeasurePoint}
         onObjectClick={handleObjectClick}
+      />
+      <PassportWindow
+        passport={passport}
+        onConnectObject={handleConnectObject}
+        onClose={() => setPassport(null)}
+      />
+      <GeoWindow
+        measurePoints={measurePoints}
+        soil={soil}
+        onMeasureClear={handleMeasureClear}
+        onClose={() => { setMeasurePoints([]); setSoil(null); }}
       />
     </div>
   );

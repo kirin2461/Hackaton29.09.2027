@@ -235,3 +235,11 @@ export const postObjectPassport = (x, y) =>
  */
 export const fetchNspdPayload = (layers) =>
   request(`/api/overlay/nspd/payload?layers=${layers.join(',')}`);
+
+/** Геодезический зонд точки: отметка земли, уклон, экспозиция (по ЦМР). */
+export const postTerrainProbe = (x, y) =>
+  request('/api/terrain/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  });

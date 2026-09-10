@@ -21,7 +21,6 @@ export default function Toolbar({
   paretoData, paretoBusy, onPareto, pdfBusy, onReportPdf,
   overlays, hiddenOverlays, overlayBusy, onNspd, onDatamos,
   onGeojsonFile, onOverlayDelete, onOverlayToggle,
-  measurePoints, onMeasureClear, passport, onConnectObject,
   profile, freeCamera, onToggleFreeCamera, nspdBrowserBusy, onNspdBrowser,
 }) {
   // Локальные поля произвольного bbox (градусы WGS84).
@@ -33,12 +32,6 @@ export default function Toolbar({
   const [dmDataset, setDmDataset] = useState('');
   const [dmKey, setDmKey] = useState('');
   const dmReady = dmDataset.trim() !== '' && dmKey.trim() !== '';
-  // Рулетка: длина ломаной и длины сегментов.
-  const measureSegs = (measurePoints ?? []).slice(1).map((pt, i) => {
-    const [ax, ay] = measurePoints[i];
-    return Math.hypot(pt[0] - ax, pt[1] - ay);
-  });
-  const measureTotal = measureSegs.reduce((a, b) => a + b, 0);
   const collision = Boolean(validation?.collision);
 
   return (
@@ -135,50 +128,10 @@ export default function Toolbar({
       )}
 
       {mode === 'measure' && (
-        <div className="group result">
-          <h2>Геодезия (рулетка)</h2>
-          <p className="hint">Кликайте по карте — точки соединяются в ломаную.</p>
-          {measurePoints.length > 0 && (
-            <>
-              <p>Точек: {measurePoints.length}</p>
-              {measureSegs.map((d, i) => (
-                <p key={i}>Пролёт {i + 1}: {d.toFixed(1)} м</p>
-              ))}
-              <p className="cost">Σ {measureTotal.toFixed(1)} м</p>
-              <button onClick={onMeasureClear}>Очистить</button>
-            </>
-          )}
-        </div>
+        <p className="hint">Кликайте по карте — точки соединяются в ломаную, результат в окне снизу.</p>
       )}
-
-      {passport && (
-        <div className="group result">
-          <h2>Паспорт объекта</h2>
-          <p><b>{passport.name}</b></p>
-          <p>Этажность: {passport.floors} · площадь: {passport.area_m2} м²</p>
-          <p>Отметка земли: {passport.ground_z_m} м</p>
-          <p>Расчётная тепловая нагрузка: {passport.heat_load_kw} кВт</p>
-          {passport.network && (
-            <>
-              <h2>Коммуникации</h2>
-              <p className="impact">
-                Ближайшая теплосеть: {passport.network.name} —{' '}
-                {passport.network.distance_m} м
-              </p>
-            </>
-          )}
-          {passport.roads.length > 0 && (
-            <p>Дороги рядом: {passport.roads.map((r) => r.name).join(', ')}</p>
-          )}
-          {passport.zones.length > 0 && (
-            <p className="error">⚠ Охранные зоны: {passport.zones.join('; ')}</p>
-          )}
-          {passport.network && (
-            <button onClick={onConnectObject}>
-              ⌁ Проложить трассу к этому объекту
-            </button>
-          )}
-        </div>
+      {mode === 'object' && (
+        <p className="hint">Кликните по зданию — его паспорт откроется окном справа.</p>
       )}
 
       {routing && <p className="status">Расчёт трассы…</p>}

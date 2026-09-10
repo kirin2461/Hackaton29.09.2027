@@ -107,6 +107,40 @@ def _cum_dists(path: list[list[float]]) -> list[float]:
     return out
 
 
+class ProbeIn(BaseModel):
+    x: float
+    y: float
+
+
+@router.post("/terrain/probe")
+def terrain_probe(payload: ProbeIn,
+                  parser: GISParser = Depends(get_parser)):
+    """Геодезический зонд точки: отметка земли, уклон, экспозиция склона.
+
+    Высоты — из той же ЦМР, что отображается в сцене (демо-рельеф
+    или лидар). Уклон считается численным градиентом на базе 6 м.
+    Это характеристики рельефа («грунт» в терминах модели), а не
+    инженерно-геологические изыскания — состав грунта ЦМР не знает.
+    """
+    from ..terrain import lidar as _lidar
+    sampler = get_sampler(_map_size(parser))
+    x, y = payload.x, payload.y
+    h = 3.0
+    z = sampler(x, y)
+    zx = (sampler(x + h, y) - sampler(x - h, y)) / (2 * h)
+    zy = (sampler(x, y + h) - sampler(x, y - h)) / (2 * h)
+    slope = math.hypot(zx, zy) * 100  # %
+    # Экспозиция — азимут направления наискорейшего спуска (0 = север).
+    aspect = (math.degrees(math.atan2(-zx, zy)) + 360) % 360 if slope > 0.01 else None
+    return {
+        "x": x, "y": y,
+        "ground_z_m": round(z, 2),
+        "slope_pct": round(slope, 1),
+        "aspect_deg": round(aspect, 0) if aspect is not None else None,
+        "source": "lidar" if _lidar.active() else "demo",
+    }
+
+
 # ---------- Паспорт объекта ----------
 
 class PassportIn(BaseModel):

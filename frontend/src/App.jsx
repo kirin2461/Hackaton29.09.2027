@@ -13,6 +13,8 @@ import {
   fetchPresets, postRoute, postValidate, postSave, postScan, postLoadBbox,
   fetchLidarStatus, postLidarDemo, postLidarClear, postLidarUpload,
   postPareto, postReportPdf,
+  fetchOverlays, postGeojsonOverlay, deleteOverlay,
+  postNspdOverlay, postDatamosOverlay,
 } from './api/client.js';
 import { exportSceneGLB } from './scene/exportGlb.js';
 import { boxIntersectsPolygon, distToPolyline } from './scene/geo.js';
@@ -62,6 +64,11 @@ export default function App() {
   const [paretoBusy, setParetoBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
 
+  // Оверлеи «всё в одну карту»: НСПД, data.mos.ru, свой GeoJSON.
+  const [overlays, setOverlays] = useState([]);
+  const [hiddenOverlays, setHiddenOverlays] = useState(new Set());
+  const [overlayBusy, setOverlayBusy] = useState(false);
+
   // Лидарный рельеф (LAS/LAZ) и облако точек.
   const [lidarStatus, setLidarStatus] = useState(null);
   const [lidarBusy, setLidarBusy] = useState(false);
@@ -91,6 +98,10 @@ export default function App() {
     fetchLidarStatus()
       .then(setLidarStatus)
       .catch(() => setLidarStatus(null));
+
+    fetchOverlays()
+      .then((d) => setOverlays(d.overlays ?? []))
+      .catch(() => setOverlays([]));
   }, []);
 
   // ---------- валидация трассы (День 12-13) ----------
@@ -320,11 +331,12 @@ export default function App() {
     setDistrictLoading(true);
     setError(null);
     postLoadBbox(payload)
-      .then(() => Promise.all([fetchLayers(), fetchTerrainMesh(), fetchNetworkStats()]))
-      .then(([layers, mesh, stats]) => {
+      .then(() => Promise.all([fetchLayers(), fetchTerrainMesh(), fetchNetworkStats(), fetchOverlays()]))
+      .then(([layers, mesh, stats, ov]) => {
         setLayersData(layers);
         setMeshData(mesh);
         setNetStats(stats);
+        setOverlays(ov.overlays ?? []); // те же слои, перепроецированные на новый район
         handleReset();
         setSiteScan(null);
       })
@@ -410,6 +422,67 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, editPath, routeData, selectedRouteKey, newBuilding, selectedNetworkId]);
 
+  // ---------- оверлеи: НСПД / data.mos.ru / GeoJSON ----------
+  const refreshOverlays = useCallback(
+    () => fetchOverlays()
+      .then((d) => setOverlays(d.overlays ?? []))
+      .catch(() => {}),
+    [],
+  );
+
+  const handleNspd = useCallback((layerKeys) => {
+    setOverlayBusy(true);
+    setError(null);
+    postNspdOverlay(layerKeys)
+      .then(() => refreshOverlays())
+      .catch((e) => setError(e.message))
+      .finally(() => setOverlayBusy(false));
+  }, [refreshOverlays]);
+
+  const handleDatamos = useCallback((datasetId, apiKey, limit) => {
+    setOverlayBusy(true);
+    setError(null);
+    postDatamosOverlay(datasetId, apiKey, limit)
+      .then(() => refreshOverlays())
+      .catch((e) => setError(e.message))
+      .finally(() => setOverlayBusy(false));
+  }, [refreshOverlays]);
+
+  const handleGeojsonFile = useCallback((file) => {
+    setOverlayBusy(true);
+    setError(null);
+    file.text()
+      .then((text) => {
+        const geojson = JSON.parse(text);
+        const name = file.name.replace(/\.(geo)?json$/i, '');
+        return postGeojsonOverlay(name, '#8a5cf6', geojson);
+      })
+      .then(() => refreshOverlays())
+      .catch((e) => setError(`GeoJSON: ${e.message}`))
+      .finally(() => setOverlayBusy(false));
+  }, [refreshOverlays]);
+
+  const handleOverlayDelete = useCallback((id) => {
+    deleteOverlay(id)
+      .then(() => {
+        setHiddenOverlays((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        refreshOverlays();
+      })
+      .catch((e) => setError(e.message));
+  }, [refreshOverlays]);
+
+  const handleOverlayToggle = useCallback((id) => {
+    setHiddenOverlays((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
   const networks = layersData?.layers?.heat_networks ?? [];
 
   return (
@@ -464,6 +537,14 @@ export default function App() {
         onLidarDemo={handleLidarDemo}
         onLidarUpload={handleLidarUpload}
         onLidarClear={handleLidarClear}
+        overlays={overlays}
+        hiddenOverlays={hiddenOverlays}
+        overlayBusy={overlayBusy}
+        onNspd={handleNspd}
+        onDatamos={handleDatamos}
+        onGeojsonFile={handleGeojsonFile}
+        onOverlayDelete={handleOverlayDelete}
+        onOverlayToggle={handleOverlayToggle}
       />
       <MapScene
         meshData={meshData}
@@ -484,6 +565,8 @@ export default function App() {
         siteScan={siteScan}
         xray={xray}
         showCloud={showCloud && Boolean(lidarStatus?.active)}
+        overlays={overlays}
+        hiddenOverlays={hiddenOverlays}
       />
     </div>
   );

@@ -18,12 +18,18 @@ export default function Toolbar({
   lidarStatus, lidarBusy, showCloud, setShowCloud,
   onLidarDemo, onLidarUpload, onLidarClear,
   paretoData, paretoBusy, onPareto, pdfBusy, onReportPdf,
+  overlays, hiddenOverlays, overlayBusy, onNspd, onDatamos,
+  onGeojsonFile, onOverlayDelete, onOverlayToggle,
 }) {
   // Локальные поля произвольного bbox (градусы WGS84).
   const [bbox, setBbox] = useState({ min_lat: '', min_lon: '', max_lat: '', max_lon: '' });
   const bboxReady = ['min_lat', 'min_lon', 'max_lat', 'max_lon']
     .every((k) => bbox[k] !== '' && Number.isFinite(Number(bbox[k])));
   const variants = routeData?.variants ?? [];
+  // Поля коннектора data.mos.ru (номер набора + бесплатный ключ).
+  const [dmDataset, setDmDataset] = useState('');
+  const [dmKey, setDmKey] = useState('');
+  const dmReady = dmDataset.trim() !== '' && dmKey.trim() !== '';
   const collision = Boolean(validation?.collision);
 
   return (
@@ -384,6 +390,72 @@ export default function Toolbar({
         </button>
         {districtLoading && (
           <p className="hint">Overpass API собирает геометрию — до минуты.</p>
+        )}
+      </div>
+
+      <div className="group">
+        <h2>Источники (всё в одну карту)</h2>
+        <button
+          disabled={overlayBusy}
+          title="Здания, сооружения, ЗОУИТ и красные линии ЕГРН по охвату карты"
+          onClick={() => onNspd(['nspd_zdaniya', 'nspd_sooruzheniya', 'nspd_zouit'])}
+        >
+          {overlayBusy ? '⏳ Загружаю…' : '🏛 НСПД (ЕГРН): здания, сооружения, ЗОУИТ'}
+        </button>
+        <p className="hint">
+          Если nspd.gov.ru не отвечает (защита Qrator) — выгрузите GeoJSON
+          с домашнего IP и загрузите файл ниже.
+        </p>
+        <div className="bbox-grid">
+          <input
+            placeholder="ID набора"
+            value={dmDataset}
+            onChange={(e) => setDmDataset(e.target.value)}
+          />
+          <input
+            placeholder="api_key data.mos.ru"
+            value={dmKey}
+            onChange={(e) => setDmKey(e.target.value)}
+          />
+        </div>
+        <button
+          disabled={!dmReady || overlayBusy}
+          onClick={() => onDatamos(Number(dmDataset), dmKey.trim(), 500)}
+        >
+          ⤓ data.mos.ru на карту
+        </button>
+        <label className="file-label">
+          …или свой GeoJSON (EPSG:4326):
+          <input
+            type="file"
+            accept=".json,.geojson"
+            disabled={overlayBusy}
+            onChange={(e) => e.target.files[0] && onGeojsonFile(e.target.files[0])}
+          />
+        </label>
+        {overlays.length > 0 && (
+          <ul className="overlay-list">
+            {overlays.map((ov) => (
+              <li key={ov.id}>
+                <input
+                  type="checkbox"
+                  checked={!hiddenOverlays.has(ov.id)}
+                  onChange={() => onOverlayToggle(ov.id)}
+                />
+                <span className="swatch" style={{ background: ov.color }} />
+                <span className="overlay-name" title={ov.name}>
+                  {ov.name} <small>({ov.count})</small>
+                </span>
+                <button
+                  className="overlay-del"
+                  title="Удалить слой"
+                  onClick={() => onOverlayDelete(ov.id)}
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 

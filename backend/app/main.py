@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes_map import router as map_router
+from .api.routes_overlay import router as overlay_router
 from .api.routes_project import router as project_router
 from .api.routes_report import router as report_router
 from .api.routes_route import router as route_router
@@ -39,6 +40,7 @@ app.include_router(terrain_router)
 app.include_router(project_router)
 app.include_router(report_router)
 app.include_router(route_router)
+app.include_router(overlay_router)
 
 
 @app.get("/api/health")

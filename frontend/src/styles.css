@@ -171,3 +171,44 @@ button.save:disabled { opacity: 0.45; cursor: not-allowed; }
 .pareto-chart .pareto-dot.front { fill: #a55eea; stroke: #ffd166; }
 .pareto-chart .pareto-dot.selected { stroke: #fff; stroke-width: 2.5px; }
 .pareto-chart .pareto-dot:hover { stroke: #fff; }
+
+/* ---------- Оверлеи «всё в одну карту» ---------- */
+.overlay-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.overlay-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+.overlay-list .swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.overlay-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-name small {
+  color: #8a8578;
+}
+
+.overlay-del {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  min-height: 18px;
+}

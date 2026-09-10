@@ -14,6 +14,7 @@ import { buildBuilding, buildNewBuilding, buildMarker, drapeOnTerrain } from './
 import { buildRoads, buildHeatNetworks, highlightHeat } from './networks';
 import { buildRoutes, buildPipe } from './routes';
 import { buildTrees } from './trees';
+import { buildOverlays } from './overlays';
 
 const PIPE_LIFT = 1.4; // как в networks.js
 const NODE_COLOR = 0xfdcb6e;      // перетаскиваемые узлы — оранжевые
@@ -23,6 +24,7 @@ export default function MapScene({
   meshData, layersData, mode, floors, buildingSize,
   newBuilding, selectedNetworkId, routes, selectedRouteKey,
   editPath, validation, siteScan, xray, showCloud,
+  overlays, hiddenOverlays,
   onTerrainClick, onNetworkClick, onRouteClick, onPathChange,
 }) {
   const mountRef = useRef(null);
@@ -181,6 +183,15 @@ export default function MapScene({
     scene.add(buildHeatNetworks(layersData.layers.heat_networks, sampler));
     scene.add(buildTrees(layersData, layersData.bounds, sampler));
   }, [layersData, meshData]);
+
+  // ---------- оверлеи «всё в одну карту»: НСПД / data.mos.ru / GeoJSON ----------
+  useEffect(() => {
+    const { scene, sampler } = stateRef.current;
+    if (!scene || !sampler) return; // ждём рельеф
+    const old = scene.getObjectByName('overlays');
+    if (old) scene.remove(old);
+    scene.add(buildOverlays(overlays, hiddenOverlays, sampler));
+  }, [overlays, hiddenOverlays, meshData]);
 
   // ---------- новое здание / маркер Точки Б (День 5) ----------
   useEffect(() => {

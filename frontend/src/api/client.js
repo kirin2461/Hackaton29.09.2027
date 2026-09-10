@@ -174,3 +174,38 @@ export const postReportPdf = async (polygon, floors, networkId, path, variant) =
   }
   return res.blob();
 };
+
+// ---------- Оверлеи: «всё в одну карту» (НСПД, data.mos.ru, GeoJSON) ----------
+
+/** Все оверлеи, пересчитанные в координаты текущей сцены. */
+export const fetchOverlays = () => request('/api/overlay/list');
+
+/** Добавить оверлей из произвольного GeoJSON-файла (EPSG:4326). */
+export const postGeojsonOverlay = (name, color, geojson, source = 'geojson') =>
+  request('/api/overlay/geojson', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, color, source, geojson }),
+  });
+
+/** Удалить оверлей по id. */
+export const deleteOverlay = (overlayId) =>
+  request(`/api/overlay/${overlayId}`, { method: 'DELETE' });
+
+/** Живой запрос к НСПД (ЕГРН) по охвату текущей карты. */
+export const postNspdOverlay = (layers) =>
+  request('/api/overlay/nspd', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ layers }),
+  });
+
+/** Живой запрос к data.mos.ru (нужен бесплатный api_key). */
+export const postDatamosOverlay = (datasetId, apiKey, limit, name, color) =>
+  request('/api/overlay/datamos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dataset_id: datasetId, api_key: apiKey, limit, name, color,
+    }),
+  });

@@ -1,0 +1,70 @@
+# Синтаксис версии 2.4: совместим и с docker-compose 1.29.2 (требование ТЗ),
+# и с compose plugin v2 (docker compose).
+version: "2.4"
+
+services:
+  db:
+    image: postgres:16
+    container_name: heatnet-db
+    environment:
+      POSTGRES_DB: heatnet
+      POSTGRES_USER: heatnet
+      POSTGRES_PASSWORD: heatnet
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heatnet"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    networks: [heatnet]
+    # Порт БД наружу не публикуем
+
+  geo-engine:
+    build: ./backend
+    container_name: heatnet-geo-engine
+    volumes:
+      - exchange:/exchange
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 1536m
+    networks: [heatnet]
+    # Порт НЕ публикуем: движок — внутренняя вычислительная библиотека сервиса
+
+  app:
+    build: ./app
+    container_name: heatnet-app
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: heatnet
+      DB_USER: heatnet
+      DB_PASSWORD: heatnet
+      ENGINE_URL: http://geo-engine:8000
+      EXCHANGE_DIR: /exchange
+    ports:
+      - "8080:8080"
+    volumes:
+      - exchange:/exchange
+    depends_on:
+      db:
+        condition: service_healthy
+      geo-engine:
+        condition: service_healthy
+    mem_limit: 1024m
+    networks: [heatnet]
+
+volumes:
+  pgdata:
+  exchange:
+
+networks:
+  heatnet:
+    driver: bridge

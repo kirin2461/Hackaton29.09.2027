@@ -1,0 +1,32 @@
+server:
+  port: 8080
+  tomcat:
+    # Не обрывать соединение при больших загрузках (ТЗ: GeoJSON до 3 ГБ)
+    max-swallow-size: -1
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 3GB
+      max-request-size: 3GB
+      # Файл сразу пишется во временный файл на диске и НИКОГДА
+      # поднимается в память целиком (ТЗ: стриминг 3 ГБ)
+      file-size-threshold: 0
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:heatnet}
+    username: ${DB_USER:heatnet}
+    password: ${DB_PASSWORD:heatnet}
+  jpa:
+    hibernate:
+      ddl-auto: none   # схема — db/init.sql, Hibernate её не трогает
+    open-in-view: false
+
+app:
+  # Общий volume для обмена файлами с geo-engine
+  exchange-dir: ${EXCHANGE_DIR:/exchange}
+  # Внутренний адрес вычислительного движка (не публикуется наружу)
+  engine-url: ${ENGINE_URL:http://localhost:8000}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

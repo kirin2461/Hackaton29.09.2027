@@ -1,0 +1,74 @@
+# РЕЗЕРВНЫЙ вариант развёртывания для хостов со сломанной host↔bridge
+# маршрутизацией (например, демо-сервер 82.114.226.204 с eBPF-фильтрацией).
+# Каноничный файл для проверки ТЗ — docker-compose.yml (мостовая сеть).
+#
+# Здесь все сервисы в network_mode: host. Наружу смотрит ТОЛЬКО app (:8080);
+# geo-engine и PostgreSQL слушают исключительно 127.0.0.1.
+#
+# Запуск: docker compose -f docker-compose.hostnet.yml up -d
+# Совместимо с docker-compose 1.29.2.
+version: "2.4"
+
+services:
+  db:
+    image: postgres:16
+    container_name: heatnet-db
+    environment:
+      POSTGRES_DB: heatnet
+      POSTGRES_USER: heatnet
+      POSTGRES_PASSWORD: heatnet
+    # PostgreSQL слушает только loopback — наружу не публикуется
+    command: postgres -c listen_addresses=127.0.0.1
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heatnet -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    network_mode: host
+
+  geo-engine:
+    build: ./backend
+    container_name: heatnet-geo-engine
+    # uvicorn слушает только loopback — движок недоступен снаружи
+    command: uvicorn app.main:app --host 127.0.0.1 --port 8000
+    volumes:
+      - exchange:/exchange
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 1536m
+    network_mode: host
+
+  app:
+    build: ./app
+    container_name: heatnet-app
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_NAME: heatnet
+      DB_USER: heatnet
+      DB_PASSWORD: heatnet
+      ENGINE_URL: http://127.0.0.1:8000
+      EXCHANGE_DIR: /exchange
+      # Приложение слушает 0.0.0.0:8080 (server.port из application.yml)
+    depends_on:
+      db:
+        condition: service_healthy
+      geo-engine:
+        condition: service_healthy
+    volumes:
+      - exchange:/exchange
+    mem_limit: 1024m
+    network_mode: host
+
+volumes:
+  pgdata:
+  exchange:

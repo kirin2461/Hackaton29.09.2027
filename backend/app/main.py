@@ -21,6 +21,7 @@ from .api.routes_report import router as report_router
 from .api.routes_route import router as route_router
 from .api.routes_terrain import router as terrain_router
 from .config import BASE_DIR, CORS_ORIGINS
+from .engine.router import router as engine_router
 
 app = FastAPI(
     title="Hackaton29 — ГИС + 3D теплосети",
@@ -43,6 +44,9 @@ app.include_router(report_router)
 app.include_router(route_router)
 app.include_router(overlay_router)
 app.include_router(geodesy_router)
+
+# Внутренний контур: вызовы от Java-оболочки (снаружи не публикуются).
+app.include_router(engine_router)
 
 
 @app.get("/api/health")

@@ -12,3 +12,10 @@ dist/
 .DS_Store
 *.log
 backend/app/data/projects/
+
+# ДИТ: временные файлы обмена app<->geo-engine и сборка Java
+exchange/
+app/target/
+
+# Локальные wheel-пакеты для офлайн-сборки geo-engine
+backend/wheelhouse/

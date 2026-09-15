@@ -20,6 +20,7 @@ RUN if ls /wheels/*.whl >/dev/null 2>&1; then \
            -i https://mirrors.aliyun.com/pypi/simple -r requirements.txt; \
     fi
 COPY app ./app
+COPY tests ./tests
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

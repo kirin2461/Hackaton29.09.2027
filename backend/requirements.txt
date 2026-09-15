@@ -12,3 +12,4 @@ python-multipart==0.0.20
 fpdf2==2.8.2
 matplotlib==3.10.0
 ijson==3.3.0
+pyyaml==6.0.3

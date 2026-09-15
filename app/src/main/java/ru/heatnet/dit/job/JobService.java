@@ -35,8 +35,9 @@ public class JobService {
     /**
      * Принять GeoJSON и создать задание.
      * Файл копируется потоково на диск (в общий volume), в память не поднимается.
+     * Метод намеренно БЕЗ @Transactional: repo.save() коммитится сразу,
+     * чтобы фоновый JobProcessor увидел запись (иначе гонка commit/submit).
      */
-    @Transactional
     public JobDto createJob(MultipartFile file) throws IOException {
         UUID id = UUID.randomUUID();
         Path inDir = exchangeDir.resolve("in");

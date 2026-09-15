@@ -51,6 +51,21 @@ export default function DitApp() {
   const stopPolling = () => { if (timer.current) { clearInterval(timer.current); timer.current = null; } };
   useEffect(() => stopPolling, []);
 
+  // Открытие результата по ссылке вида /dit?job=<id>
+  useEffect(() => {
+    const jid = new URLSearchParams(window.location.search).get('job');
+    if (!jid) return;
+    (async () => {
+      try {
+        const fresh = await apiJob(jid);
+        setJob(fresh);
+        if (fresh.status === 'DONE' || fresh.status === 'PARTIAL') {
+          setResult(await apiResult(jid));
+        }
+      } catch (e) { setError(e.message); }
+    })();
+  }, []);
+
   const onFile = useCallback(async (file) => {
     if (!file) return;
     stopPolling();

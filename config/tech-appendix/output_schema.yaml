@@ -1,0 +1,52 @@
+# ============================================================================
+# Раздел 10 техприложения — контракт выходного GeoJSON (FeatureCollection).
+# Все варианты — в одном массиве features, различаются variant_id.
+# ВАЖНО: у каждого типа ТОЛЬКО свой набор атрибутов; чужие поля
+# не добавляются даже со значением null (кроме явно nullable depth_*).
+# Точки подключения перспективных ОКС повторно не передаются.
+# ============================================================================
+version: "tech-appendix-1.0"
+
+crs_output: "EPSG:4326"
+max_variants: 3                     # §2.8 основного кейса / §9 приложения
+
+output_types:
+  heat_network:                     # §10.1 — участок новой сети
+    geometry: LineString
+    required: [id, object_type, variant_id, start_node_id, end_node_id,
+               flow_tph, diameter, length, laying_method, depth_start, depth_end, cost]
+    enums: { laying_method: [base, special] }
+    nullable: [depth_start, depth_end]      # null в основной 2D-задаче
+
+  tie_in:                           # §10.2 — точка врезки
+    geometry: Point
+    required: [id, object_type, variant_id, existing_object_id, existing_object_type,
+               existing_diameter, required_diameter, cost]
+    enums: { existing_object_type: [heat_network, heat_chamber] }
+
+  heat_network_reconstruction:      # §10.3 — реконструируемая часть (фактическая геометрия!)
+    geometry: LineString
+    required: [id, object_type, variant_id, existing_object_id, existing_flow_tph,
+               added_flow_tph, calculated_flow_tph, existing_diameter,
+               required_diameter, length, cost]
+
+  heat_chamber:                     # §10.4 — новая камера
+    geometry: Point
+    required: [id, object_type, variant_id, diameter, cost]
+
+  heat_chamber_reconstruction:      # §10.5 — только для камер-точек врезки при необходимости
+    geometry: Point
+    required: [id, object_type, variant_id, existing_object_id,
+               existing_diameter, required_diameter, cost]
+
+  technical_node:                   # §10.6 — смена ДУ/способа/глубины вне камеры и врезки
+    geometry: Point
+    required: [id, object_type, variant_id]
+
+  variant_summary:                  # §10.7 — ровно ОДНА запись на вариант
+    geometry: null
+    required: [id, object_type, variant_id, rank, construction_cost,
+               chamber_construction_cost, tie_in_cost, reconstruction_cost,
+               chamber_reconstruction_cost, unconnected_penalty, calculated_cost,
+               new_network_length, reconstruction_length, length, score,
+               unconnected_oks_ids]

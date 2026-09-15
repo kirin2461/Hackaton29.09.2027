@@ -1,0 +1,30 @@
+# ============================================================================
+# Таблица 4.1 + 4.2 техприложения — диаметры, пропускная способность,
+# предельная длина, стоимость строительства/реконструкции, расчётные габариты.
+# Источник: «Техническое приложение», раздел 4. НИЧЕГО из этого файла
+# не должно дублироваться константами в коде.
+# ============================================================================
+version: "tech-appendix-1.0"
+
+# Правило подбора (§3): минимальный ДУ, у которого capacity_tph >= расход участка.
+# Предельная длина: отсчёт начинается заново при смене ДУ; камера/техузел
+# без смены ДУ новый отсчёт НЕ начинают.
+diameters:
+  - { du: 50,   capacity_tph: 3.5,     max_length_m: 181,   new_cost_rub_per_m: 74023,  reconstruction_cost_rub_per_m: 96180,  shell_outer_diameter_m: 0.125, shell_gap_m: 0.150, pair_width_m: 0.400, pair_height_m: 0.125 }
+  - { du: 65,   capacity_tph: 8.3,     max_length_m: 245,   new_cost_rub_per_m: 78631,  reconstruction_cost_rub_per_m: 109989, shell_outer_diameter_m: 0.140, shell_gap_m: 0.150, pair_width_m: 0.430, pair_height_m: 0.140 }
+  - { du: 80,   capacity_tph: 13.2,    max_length_m: 327,   new_cost_rub_per_m: 83530,  reconstruction_cost_rub_per_m: 117582, shell_outer_diameter_m: 0.160, shell_gap_m: 0.150, pair_width_m: 0.470, pair_height_m: 0.160 }
+  - { du: 100,  capacity_tph: 22.3,    max_length_m: 419,   new_cost_rub_per_m: 89748,  reconstruction_cost_rub_per_m: 133694, shell_outer_diameter_m: 0.180, shell_gap_m: 0.150, pair_width_m: 0.510, pair_height_m: 0.180 }
+  - { du: 125,  capacity_tph: 40.2,    max_length_m: 554,   new_cost_rub_per_m: 97275,  reconstruction_cost_rub_per_m: 148030, shell_outer_diameter_m: 0.225, shell_gap_m: 0.150, pair_width_m: 0.600, pair_height_m: 0.225 }
+  - { du: 150,  capacity_tph: 65.1,    max_length_m: 696,   new_cost_rub_per_m: 105507, reconstruction_cost_rub_per_m: 152295, shell_outer_diameter_m: 0.250, shell_gap_m: 0.150, pair_width_m: 0.650, pair_height_m: 0.250 }
+  - { du: 200,  capacity_tph: 152.3,   max_length_m: 1042,  new_cost_rub_per_m: 120275, reconstruction_cost_rub_per_m: 181766, shell_outer_diameter_m: 0.315, shell_gap_m: 0.250, pair_width_m: 0.880, pair_height_m: 0.315 }
+  - { du: 250,  capacity_tph: 274.9,   max_length_m: 1379,  new_cost_rub_per_m: 135323, reconstruction_cost_rub_per_m: 202030, shell_outer_diameter_m: 0.400, shell_gap_m: 0.250, pair_width_m: 1.050, pair_height_m: 0.400 }
+  - { du: 300,  capacity_tph: 437.4,   max_length_m: 1718,  new_cost_rub_per_m: 150022, reconstruction_cost_rub_per_m: 228707, shell_outer_diameter_m: 0.450, shell_gap_m: 0.250, pair_width_m: 1.150, pair_height_m: 0.450 }
+  - { du: 400,  capacity_tph: 943.1,   max_length_m: 2477,  new_cost_rub_per_m: 190299, reconstruction_cost_rub_per_m: 271317, shell_outer_diameter_m: 0.560, shell_gap_m: 0.250, pair_width_m: 1.370, pair_height_m: 0.560 }
+  - { du: 500,  capacity_tph: 1663.4,  max_length_m: 3245,  new_cost_rub_per_m: 224137, reconstruction_cost_rub_per_m: 333884, shell_outer_diameter_m: 0.710, shell_gap_m: 0.250, pair_width_m: 1.670, pair_height_m: 0.710 }
+  - { du: 600,  capacity_tph: 2627.7,  max_length_m: 4037,  new_cost_rub_per_m: 264790, reconstruction_cost_rub_per_m: 372703, shell_outer_diameter_m: 0.800, shell_gap_m: 0.250, pair_width_m: 1.850, pair_height_m: 0.800 }
+  - { du: 700,  capacity_tph: 3735.1,  max_length_m: 4775,  new_cost_rub_per_m: 324298, reconstruction_cost_rub_per_m: 439571, shell_outer_diameter_m: 0.900, shell_gap_m: 0.250, pair_width_m: 2.050, pair_height_m: 0.900 }
+  - { du: 800,  capacity_tph: 5296.8,  max_length_m: 5644,  new_cost_rub_per_m: 325996, reconstruction_cost_rub_per_m: 489918, shell_outer_diameter_m: 1.000, shell_gap_m: 0.250, pair_width_m: 2.250, pair_height_m: 1.000 }
+  - { du: 900,  capacity_tph: 7165.0,  max_length_m: 6518,  new_cost_rub_per_m: 327693, reconstruction_cost_rub_per_m: 553607, shell_outer_diameter_m: 1.100, shell_gap_m: 0.250, pair_width_m: 2.450, pair_height_m: 1.100 }
+  - { du: 1000, capacity_tph: 9391.8,  max_length_m: 7419,  new_cost_rub_per_m: 418777, reconstruction_cost_rub_per_m: 606679, shell_outer_diameter_m: 1.200, shell_gap_m: 0.250, pair_width_m: 2.650, pair_height_m: 1.200 }
+  - { du: 1200, capacity_tph: 15012.8, max_length_m: 9288,  new_cost_rub_per_m: 428074, reconstruction_cost_rub_per_m: 825692, shell_outer_diameter_m: 1.425, shell_gap_m: 0.250, pair_width_m: 3.100, pair_height_m: 1.425 }
+  - { du: 1400, capacity_tph: 22501.9, max_length_m: 11276, new_cost_rub_per_m: 683417, reconstruction_cost_rub_per_m: 978584, shell_outer_diameter_m: 1.600, shell_gap_m: 0.250, pair_width_m: 3.450, pair_height_m: 1.600 }

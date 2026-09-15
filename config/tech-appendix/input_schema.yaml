@@ -1,0 +1,45 @@
+# ============================================================================
+# Раздел 2 техприложения — контракт входного GeoJSON (FeatureCollection).
+# Используется импортёром и fail-fast валидацией на старте расчёта.
+# ============================================================================
+version: "tech-appendix-1.0"
+
+crs_input: "EPSG:4326"              # геометрия во входном файле — WGS 84
+crs_calculation: "EPSG:32637"       # все длины/расстояния/буферы — после проекции в UTM 37N
+
+# Обязательные атрибуты по типам объектов (таблицы 2.1–2.2).
+object_types:
+  source:
+    geometry: [Point]
+    required: [id, object_type]
+  heat_network:
+    geometry: [LineString]
+    required: [id, object_type, diameter, flow_tph, upstream_object_id]
+    # diameter — текущий ДУ, мм; flow_tph — текущий расчётный расход, т/ч;
+    # upstream_object_id — следующий объект к источнику: heat_network | heat_chamber | source
+  heat_chamber:
+    geometry: [Point]
+    required: [id, object_type, diameter, upstream_object_id]
+    # diameter — максимальный ДУ уже примыкающих участков, мм
+  oks_future:
+    geometry: [Polygon, MultiPolygon]
+    required: [id, object_type, flow_tph, heat_load]
+    # flow_tph — расход для расчёта новой сети, т/ч; heat_load — справочно, Гкал/ч
+  oks_connection_point:
+    geometry: [Point]
+    required: [id, object_type, oks_id]   # oks_id — ссылка на oks_future
+  oks_existing:
+    geometry: [Polygon, MultiPolygon]
+    required: [id, object_type]           # правило обработки — см. constraints.yaml (oks_existing)
+  restriction:
+    geometry: [Point, LineString, Polygon, MultiPolygon]
+    required: [id, object_type, restriction_type]
+    # restriction_type: road | tram_tracks | gas_pipeline | power_cable | water | park |
+    #                   social_area | prohibited_site | heat_network | ...
+
+# Проверки целостности при импорте (fail fast, критерий «Техническая проработка»):
+integrity_checks:
+  - "upstream-цепочка от каждого heat_network/heat_chamber завершается объектом source"
+  - "каждый oks_future имеет ровно одну oks_connection_point с oks_id = его id"
+  - "по направлению к источнику diameter не уменьшается"
+  - "все id уникальны в пределах файла"

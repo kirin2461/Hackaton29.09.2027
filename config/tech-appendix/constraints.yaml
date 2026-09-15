@@ -1,0 +1,60 @@
+# ============================================================================
+# Таблица 5.1 техприложения — правила по типам пространственных ограничений.
+# Всего ДВА вида правил: forbidden (обход с мин. расстоянием) и
+# special_passage (пересечение отдельным участком с коэффициентом Kспец).
+# Минимальные расстояния проверяются между ВНЕШНИМИ границами расчётных
+# габаритов объектов (габариты — см. diameters.yaml, pair_width_m).
+# ============================================================================
+version: "tech-appendix-1.0"
+
+restriction_rules:
+  # NB: существующий ОКС приходит как object_type=oks_existing (не restriction!)
+  oks_existing:
+    rule: forbidden
+    # мин. расстояние зависит от ДУ новой сети
+    min_distance_by_du:
+      - { du_max: 499,  distance_m: 5.0 }
+      - { du_min: 500, du_max: 800, distance_m: 7.0 }
+      - { du_min: 900, distance_m: 9.0 }
+
+  park:            { rule: forbidden, min_distance_m: 1.0 }
+  social_area:     { rule: forbidden, min_distance_m: 1.0 }
+  prohibited_site: { rule: forbidden, min_distance_m: 1.0 }
+  water:           { rule: forbidden, min_distance_m: 1.0 }
+
+  road:
+    rule: special_passage
+    min_distance_m: 1.5                    # при прохождении РЯДОМ (без пересечения)
+    min_crossing_angle_deg: 45
+    depth_rule: { mode: below, top_min_below_surface_m: 1.0 }   # верх габарита ≥ 1.0 м ниже условной поверхности
+    special_zone: { within_polygon: true, extend_each_side_m: 3.0 }
+    k_special: 1.60
+
+  tram_tracks:
+    rule: special_passage
+    min_distance_m: 1.5
+    min_crossing_angle_deg: 45
+    depth_rule: { mode: below, top_min_below_surface_m: 1.2 }
+    special_zone: { within_polygon: true, extend_each_side_m: 3.0 }
+    k_special: 1.75
+
+  gas_pipeline:
+    rule: special_passage
+    min_distance_m: 2.0
+    depth_rule: { mode: above_or_below, min_vertical_clearance_m: 0.2 }
+    special_zone: { each_side_of_crossing_m: 2.0 }
+    k_special: 1.25
+
+  power_cable:                              # до 35 кВ
+    rule: special_passage
+    min_distance_m: 2.0
+    depth_rule: { mode: above_or_below, min_vertical_clearance_m: 0.5 }
+    special_zone: { each_side_of_crossing_m: 2.0 }
+    k_special: 1.15
+
+  heat_network:                             # независимое пересечение БЕЗ врезки
+    rule: special_passage
+    min_distance_m: 1.0
+    depth_rule: { mode: above_or_below, min_vertical_clearance_m: 0.5 }
+    special_zone: { each_side_of_crossing_m: 2.0 }
+    k_special: 1.05

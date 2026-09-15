@@ -24,7 +24,9 @@ def variant_costs(new_segments, new_chambers, taps, recon, unconnected,
     """Развёрнутая калькуляция одного варианта."""
     cost_new = sum(s.cost_rub for s in new_segments)
     cost_chambers = sum(c["cost_rub"] for c in new_chambers)
-    cost_taps = sum(t.tap_cost_rub for t in taps)
+    # врезка с постройкой новой камеры уже учтена в cost_chambers —
+    # в статью «врезки» идут только подключения к существующим камерам
+    cost_taps = sum(t.tap_cost_rub for t in taps if t.kind == "existing_chamber")
     cost_recon = recon.total_cost_rub
     cost_penalty = len(unconnected) * ref.tariff("unconnected_penalty")
     total = cost_new + cost_chambers + cost_taps + cost_recon + cost_penalty

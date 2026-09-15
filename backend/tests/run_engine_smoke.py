@@ -67,6 +67,8 @@ def main() -> int:
                    any(s["object_id"] == "S1" for s in by_type.get("reconstruction_segment", []))))
     checks.append(("есть спецпроход отдельным участком (путь к B3)",
                    any(s["method"] == "special_passage" for s in by_type.get("new_segment", []))))
+    checks.append(("§8.2: B5 врезан в существующую камеру C1 (≤10 м, места есть)",
+                   any(t.get("chamber_id") == "C1" for t in by_type.get("tapping", []))))
     checks.append(("сводная стоимость > 0", summary["costs_rub"]["total"] > 0))
 
     # В раздельном варианте стволов быть не должно
@@ -80,6 +82,37 @@ def main() -> int:
         checks.append(("у раздельного варианта нет стволовых участков",
                        len(trunk_in_separate) == 0))
 
+
+    # --- §8.2: строгое правило врезки (юнит-случаи) ---
+    from app.engine.refdata import RefData
+    from shapely.geometry import LineString as _LS, Point as _Pt
+    from app.engine.model import Chamber as _Ch, Segment as _Seg
+    from app.engine.network import ExistingNetwork as _Net
+    from app.engine.tapping import choose_tap_strict
+
+    _ref = RefData()
+    _segs = {"S": _Seg(object_id="S", geom=_LS([(0, 0), (100, 0)]),
+                       diameter_mm=200, flow_tph=50, next_object_id=None)}
+    # камера в 5 м от якоря, но примыкания исчерпаны -> новая камера
+    _net_full = _Net(_segs, {"C": _Ch(object_id="C", geom=_Pt(50, 5),
+                                      occupied_connections=4, next_object_id="S")})
+    _tap = choose_tap_strict(_Pt(50, 8), 10, _net_full, _ref, {})
+    checks.append(("§8.2: камера ≤10 м, но 4 примыкания -> новая камера на проекции",
+                   _tap is not None and _tap.kind == "new_chamber_on_segment"
+                   and _tap.segment_id == "S"))
+    # камера дальше 10 м -> новая камера
+    _net_far = _Net(_segs, {"C": _Ch(object_id="C", geom=_Pt(50, 30),
+                                     occupied_connections=1, next_object_id="S")})
+    _tap = choose_tap_strict(_Pt(50, 8), 10, _net_far, _ref, {})
+    checks.append(("§8.2: камера дальше 10 м -> новая камера на проекции",
+                   _tap is not None and _tap.kind == "new_chamber_on_segment"))
+    # камера в 5 м и свободна -> врезка в неё
+    _net_ok = _Net(_segs, {"C": _Ch(object_id="C", geom=_Pt(50, 5),
+                                    occupied_connections=2, next_object_id="S")})
+    _tap = choose_tap_strict(_Pt(50, 8), 10, _net_ok, _ref, {})
+    checks.append(("§8.2: камера ≤10 м и свободна -> врезка в существующую",
+                   _tap is not None and _tap.kind == "existing_chamber"
+                   and _tap.chamber_id == "C"))
 
     # --- Задание на глубину (Спринт 4) ---
     seg_feats = [f for f in data["features"]

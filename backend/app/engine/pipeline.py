@@ -3,10 +3,15 @@
 Спринт 2: обязательные правила §2.3–2.6 ТЗ (граф сети, врезки,
 мульти-ОКС, гидравлика, реконструкция, ограничения).
 Спринт 3: до трёх СОДЕРЖАТЕЛЬНО РАЗНЫХ вариантов (§2.8):
-  V1 — совместное подключение, оптимальные врезки;
+  V1 — совместное подключение, базовый коридор;
   V2 — раздельное подключение каждого ОКС;
-  V3 — совместное подключение, альтернативные точки врезки.
+  V3 — совместное подключение, альтернативный коридор (усиленный
+       штраф за повороты → другая геометрия трасс).
 Ранжирование: 70% стоимость + 30% протяжённость строительных работ.
+
+Точка врезки — строго по §8.2 (детерминирована, см. tapping.py),
+поэтому вариантность строится на топологии подключения (ствол/раздельно)
+и коридорах маршрутизации, а не на выборе врезок.
 
 Частичный результат (§2.9): ОКС/кластер без точки врезки или маршрута
 не роняет расчёт — попадает в перечень unconnected с причиной.
@@ -32,7 +37,7 @@ from .network import ExistingNetwork
 from .postprocess import check_self_intersection, simplify_path
 from .reconstruction import compute_reconstruction
 from .refdata import RefData
-from .tapping import Tap, choose_tap_ranked
+from .tapping import Tap, choose_tap_strict
 
 
 @dataclass(frozen=True)
@@ -40,14 +45,16 @@ class Strategy:
     """Стратегия построения варианта (§2.8)."""
 
     label: str
-    cluster: bool       # совместное подключение кластеров ОКС
-    tap_rank: int       # 0 — лучшая врезка, 1 — вторая и т.д.
+    cluster: bool                 # совместное подключение кластеров ОКС
+    turn_penalty_mult: float = 1.0  # множитель штрафа за поворот (коридор A*)
+    avoid_previous: bool = False    # обходить коридоры трасс предыдущих вариантов
 
 
 STRATEGIES = [
-    Strategy("Совместное подключение, оптимальные врезки", cluster=True, tap_rank=0),
-    Strategy("Раздельное подключение", cluster=False, tap_rank=0),
-    Strategy("Совместное подключение, альтернативные врезки", cluster=True, tap_rank=1),
+    Strategy("Совместное подключение, базовый коридор", cluster=True),
+    Strategy("Раздельное подключение", cluster=False),
+    Strategy("Совместное подключение, альтернативный коридор",
+             cluster=True, turn_penalty_mult=4.0, avoid_previous=True),
 ]
 
 
@@ -67,13 +74,24 @@ def run_pipeline(input_path: Path, result_path: Path,
 
     variants: list[dict] = []
     seen_signatures: set[tuple] = set()
+    prev_paths: list = []
     for strategy in STRATEGIES:
-        variant = _compute_variant(data, net, grid, ref, strategy)
+        changed = []
+        if strategy.avoid_previous and prev_paths:
+            changed = grid.penalize_corridor(
+                prev_paths,
+                radius_m=float(ref.rule("corridor_avoid_radius_m")),
+                factor=float(ref.rule("corridor_avoid_factor")))
+        try:
+            variant = _compute_variant(data, net, grid, ref, strategy)
+        finally:
+            grid.restore_mult(changed)
         signature = _variant_signature(variant)
         if variants and signature in seen_signatures:
             continue  # содержательно не отличается — не плодим дубликаты
         seen_signatures.add(signature)
         variants.append(variant)
+        prev_paths.extend(s.coords for s in variant["new_segments"])
         if len(variants) >= 3:
             break
 
@@ -81,7 +99,7 @@ def run_pipeline(input_path: Path, result_path: Path,
 
     best = variants[0] if variants else _empty_variant()
     summary = {
-        "engine": "dit-sprint4.1",  # + дельта техприложения 5/2/1
+        "engine": "dit-sprint4.2",  # + дельта техприложения 5/2/1/4
         "job_elapsed_ms": int((time.time() - started) * 1000),
         "buildings_total": len(data.buildings),
         "buildings_connected": len(data.buildings) - len(best["unconnected_ids"]),
@@ -205,13 +223,12 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
     cy = sum(p.y for p in anchors) / len(anchors)
     cluster_center = Point(cx, cy)
 
-    candidates = choose_tap_ranked(cluster_center, flow_total, net, ref, chamber_load)
-    if not candidates:
+    tap = choose_tap_strict(cluster_center, flow_total, net, ref, chamber_load)
+    if tap is None:
         for b in pack:
             unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                 "reason": "нет доступных точек врезки в радиусе поиска"})
         return
-    tap = candidates[min(strategy.tap_rank, len(candidates) - 1)]
     taps.append(tap)
     if tap.kind == "existing_chamber":
         chamber_load[tap.chamber_id] = chamber_load.get(tap.chamber_id, 0) + 1
@@ -235,9 +252,10 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
             blocked_cells += grid.block_polygon(b.geom)
 
     try:
+        turn_penalty = ref.rule("turn_penalty_m") * strategy.turn_penalty_mult
         if len(pack) == 1:
             b = pack[0]
-            coords = _route(grid, tap.point, b.anchor)
+            coords = _route(grid, tap.point, b.anchor, turn_penalty)
             if coords is None:
                 unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                     "reason": "A* не нашёл маршрут до точки подключения"})
@@ -246,7 +264,7 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                             grid, ref, seq, new_segments, tech_nodes, warnings)
         else:
             branch_pt = grid_snap_free(grid, cluster_center)
-            trunk = _route(grid, tap.point, branch_pt)
+            trunk = _route(grid, tap.point, branch_pt, turn_penalty)
             if trunk is None:
                 for b in pack:
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
@@ -267,7 +285,7 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                 "+".join(b.object_id for b in pack),
                 grid, ref, seq, new_segments, tech_nodes, warnings)
             for b in pack:
-                coords = _route(grid, branch_pt, b.anchor)
+                coords = _route(grid, branch_pt, b.anchor, turn_penalty)
                 if coords is None:
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                         "reason": "A* не нашёл маршрут ветви"})
@@ -311,8 +329,9 @@ def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
     return parts[0].depth_m if parts else 0.0
 
 
-def _route(grid: ConstraintGrid, a: Point, b: Point):
-    return grid.astar((a.x, a.y), (b.x, b.y))
+def _route(grid: ConstraintGrid, a: Point, b: Point,
+           turn_penalty_m: float | None = None):
+    return grid.astar((a.x, a.y), (b.x, b.y), turn_penalty_m=turn_penalty_m)
 
 
 def grid_snap_free(grid: ConstraintGrid, pt: Point) -> Point:

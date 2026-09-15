@@ -117,6 +117,33 @@ class ConstraintGrid:
                     pass
         return self.default_special_mult
 
+    def penalize_corridor(self, paths, radius_m: float, factor: float) -> list:
+        """Временно повысить стоимость ячеек вдоль путей (×factor).
+
+        Нужно для варианта «альтернативный коридор»: A* обходит трассы
+        предыдущих вариантов. Возвращает [(ячейка, старый вес)] для
+        восстановления через restore_mult.
+        """
+        cells: set[tuple[int, int]] = set()
+        r = int(math.ceil(radius_m / self.cell))
+        for pts in paths:
+            for x, y in pts:
+                ci, cj = self.to_cell(x, y)
+                for i in range(ci - r, ci + r + 1):
+                    for j in range(cj - r, cj + r + 1):
+                        if 0 <= i < self.nx and 0 <= j < self.ny:
+                            cells.add((i, j))
+        changed = []
+        for c in cells:
+            if not self.blocked[c]:
+                changed.append((c, float(self.mult[c])))
+                self.mult[c] *= factor
+        return changed
+
+    def restore_mult(self, changed: list) -> None:
+        for c, old in changed:
+            self.mult[c] = old
+
     def block_polygon(self, geom) -> list[tuple[int, int]]:
         """Временная блокировка (например, контур целевого ОКС)."""
         cells = [c for c in self._cells_covered_by(geom) if not self.blocked[c]]

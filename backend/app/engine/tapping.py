@@ -1,11 +1,15 @@
-"""Выбор точек врезки в существующую сеть (§2.3–2.5 ТЗ, Спринт 2).
+"""Выбор точки врезки в существующую сеть — строгое правило §8.2.
 
-Кандидаты:
-  1) существующая камера со свободными примыканиями (лимит — 4,
-     из них в новых направлениях — 3);
-  2) проекция на трубопровод → строительство НОВОЙ камеры в точке врезки.
+Никакой эвристики ранжирования кандидатов. Детерминированно:
 
-Победитель — минимальная полная стоимость «длина подводки + врезка».
+  1) если от точки подключения до существующей камеры ≤ 10 м
+     (`chamber_tap_max_dist_m`) и у камеры меньше 4 примыкающих
+     участков (`max_chamber_connections`, считая уже назначенные
+     в этом расчёте) — врезка в эту камеру (ближайшую из подходящих);
+  2) иначе — строительство НОВОЙ камеры на ближайшей проекции
+     точки подключения на существующий участок сети (в радиусе
+     `tap_search_radius_m`); если участков в радиусе нет — None
+     (ОКС уйдёт в unconnected, §2.9).
 """
 
 from __future__ import annotations
@@ -15,7 +19,6 @@ from typing import Optional
 
 from shapely.geometry import Point
 
-from .model import Building
 from .network import ExistingNetwork
 from .refdata import RefData
 
@@ -33,56 +36,42 @@ class Tap:
     tap_cost_rub: float = 0.0
 
 
-def choose_tap_ranked(anchor: Point, flow_tph: float, net: ExistingNetwork,
-                      refdata: RefData, chamber_load: dict[str, int]) -> list[Tap]:
-    """Все кандидаты врезки, отсортированные по полной стоимости.
-
-    Нужно для вариантности (§2.8): вариант 1 берёт лучшего кандидата,
-    альтернативные варианты — следующих по списку.
-    """
-    radius = refdata.rule("tap_search_radius_m")
+def choose_tap_strict(anchor: Point, flow_tph: float, net: ExistingNetwork,
+                      refdata: RefData, chamber_load: dict[str, int]) -> Optional[Tap]:
+    """Точка врезки по §8.2 для здания/кластера от точки anchor."""
+    max_dist = float(refdata.rule("chamber_tap_max_dist_m"))
     max_conn = int(refdata.rule("max_chamber_connections"))
-    lay_min = refdata.lay_tariff(refdata.diameter_for_flow(flow_tph)["dn_mm"])
 
-    candidates: list[tuple[float, Tap]] = []
-
-    # --- кандидат 1: существующие камеры ---
-    for cid, dist in net.chambers_near(anchor, radius):
+    # --- шаг 1: камера ≤ 10 м со свободными примыканиями ---
+    best: tuple[float, str] | None = None
+    for cid, dist in net.chambers_near(anchor, max_dist):
         if net.chamber_free_connections(cid, chamber_load, max_conn) <= 0:
-            continue
-        ch = net.chambers[cid]
-        cost = dist * lay_min + refdata.tariff("tapping_existing_chamber")
-        candidates.append((cost, Tap(
+            continue  # камера рядом, но примыканий уже 4 — новая камера
+        if best is None or dist < best[0]:
+            best = (dist, cid)
+    if best is not None:
+        ch = net.chambers[best[1]]
+        return Tap(
             kind="existing_chamber",
             point=ch.geom,
             flow_tph=flow_tph,
-            chamber_id=cid,
-            chain_start_id=cid,
+            chamber_id=best[1],
+            chain_start_id=best[1],
             tap_cost_rub=refdata.tariff("tapping_existing_chamber"),
-        )))
+        )
 
-    # --- кандидат 2: проекция на трубопровод → новая камера ---
-    for sid, dist in net.segments_near(anchor, radius):
-        seg = net.segments[sid]
-        proj_m = seg.geom.project(anchor)
-        pt = seg.geom.interpolate(proj_m)
-        real_dist = pt.distance(anchor)
-        cost = real_dist * lay_min + refdata.tariff("chamber_new")
-        candidates.append((cost, Tap(
-            kind="new_chamber_on_segment",
-            point=pt,
-            flow_tph=flow_tph,
-            segment_id=sid,
-            chain_start_id=sid,
-            tap_cost_rub=refdata.tariff("chamber_new"),
-        )))
-
-    candidates.sort(key=lambda t: t[0])
-    return [tap for _, tap in candidates]
-
-
-def choose_tap(anchor: Point, flow_tph: float, net: ExistingNetwork,
-               refdata: RefData, chamber_load: dict[str, int]) -> Optional[Tap]:
-    """Лучшая точка врезки для здания/кластера от точки anchor."""
-    ranked = choose_tap_ranked(anchor, flow_tph, net, refdata, chamber_load)
-    return ranked[0] if ranked else None
+    # --- шаг 2: новая камера на ближайшей проекции на участок ---
+    near = net.segments_near(anchor, float(refdata.rule("tap_search_radius_m")))
+    if not near:
+        return None
+    sid, _ = near[0]
+    seg = net.segments[sid]
+    pt = seg.geom.interpolate(seg.geom.project(anchor))
+    return Tap(
+        kind="new_chamber_on_segment",
+        point=pt,
+        flow_tph=flow_tph,
+        segment_id=sid,
+        chain_start_id=sid,
+        tap_cost_rub=refdata.tariff("chamber_new"),
+    )

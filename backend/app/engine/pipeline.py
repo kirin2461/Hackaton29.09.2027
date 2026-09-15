@@ -22,6 +22,7 @@ from shapely.geometry import Point
 
 from .clustering import cluster_buildings
 from .cost import rank_variants, variant_costs, variant_length_m
+from .depth import assign_depth, chamber_depth_m
 from .exporter import write_result
 from .grid import ConstraintGrid
 from .hydraulics import NewSegment, TechnicalNode, enforce_max_length, size_segment
@@ -80,7 +81,7 @@ def run_pipeline(input_path: Path, result_path: Path,
 
     best = variants[0] if variants else _empty_variant()
     summary = {
-        "engine": "dit-sprint3",
+        "engine": "dit-sprint4",
         "job_elapsed_ms": int((time.time() - started) * 1000),
         "buildings_total": len(data.buildings),
         "buildings_connected": len(data.buildings) - len(best["unconnected_ids"]),
@@ -185,6 +186,19 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                   new_segments, new_chambers, tech_nodes, taps,
                   unconnected, warnings) -> None:
     """Одна пачка ОКС: врезка, (ствол), ветви, гидравлика."""
+    # §2.9: ОКС с точкой подключения в запретной зоне — сразу в unconnected
+    reachable = []
+    for b in pack:
+        zone_id = grid.forbidden_reason(b.anchor)
+        if zone_id:
+            unconnected.append({
+                "building_id": b.object_id, "point": b.anchor,
+                "reason": f"точка подключения в запретной зоне {zone_id}"})
+        else:
+            reachable.append(b)
+    pack = reachable
+    if not pack:
+        return
     flow_total = sum(b.flow_tph for b in pack)
     anchors = [b.anchor for b in pack]
     cx = sum(p.x for p in anchors) / len(anchors)
@@ -203,12 +217,14 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
         chamber_load[tap.chamber_id] = chamber_load.get(tap.chamber_id, 0) + 1
     else:
         seq["chamber"] += 1
+        tap_dn = ref.diameter_for_flow(flow_total)["dn_mm"]
         new_chambers.append({
             "object_id": f"new-chamber-{seq['chamber']}",
             "kind": "tapping_on_segment",
             "point": tap.point,
             "segment_id": tap.segment_id,
             "cost_rub": ref.tariff("chamber_new"),
+            "depth_m": chamber_depth_m(ref, tap_dn),
         })
 
     # Целевые контуры ОКС блокируем, чтобы трасса их не пересекала
@@ -237,16 +253,19 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                                         "reason": "A* не нашёл маршрут ствола"})
                 return
             seq["chamber"] += 1
+            trunk_dn = ref.diameter_for_flow(flow_total)["dn_mm"]
             new_chambers.append({
                 "object_id": f"new-chamber-{seq['chamber']}",
                 "kind": "branching",
                 "point": branch_pt,
                 "segment_id": None,
                 "cost_rub": ref.tariff("chamber_new"),
+                "depth_m": chamber_depth_m(ref, trunk_dn),
             })
-            _append_segment(trunk, flow_total, "trunk",
-                            "+".join(b.object_id for b in pack),
-                            grid, ref, seq, new_segments, tech_nodes, warnings)
+            trunk_depth = _append_segment(
+                trunk, flow_total, "trunk",
+                "+".join(b.object_id for b in pack),
+                grid, ref, seq, new_segments, tech_nodes, warnings)
             for b in pack:
                 coords = _route(grid, branch_pt, b.anchor)
                 if coords is None:
@@ -254,15 +273,21 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                                         "reason": "A* не нашёл маршрут ветви"})
                     continue
                 _append_segment(coords, b.flow_tph, "branch", b.object_id,
-                                grid, ref, seq, new_segments, tech_nodes, warnings)
+                                grid, ref, seq, new_segments, tech_nodes, warnings,
+                                entry_depth_m=trunk_depth)
         _assert_tree(new_segments[segs_before:], warnings)
     finally:
         grid.unblock(blocked_cells)
 
 
 def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
-                    new_segments, tech_nodes, warnings) -> None:
-    """Постобработка, спецпроходы, диаметр, предельная длина, стоимость."""
+                    new_segments, tech_nodes, warnings,
+                    entry_depth_m=None) -> float:
+    """Постобработка, спецпроходы, диаметр, предельная длина, глубина.
+
+    Возвращает глубину заложения в начале участка — как входную отметку
+    для примыкающих ветвей (задание на глубину, Спринт 4).
+    """
     pts = simplify_path(coords, tolerance_m=grid.cell * 0.75)
     if not check_self_intersection(pts):
         warnings.append(f"{owner_id}: самопересечение трассы после упрощения — оставлено как есть")
@@ -280,7 +305,14 @@ def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
     parts, nodes = enforce_max_length(seg, ref, node_seq)
     seq["tech"] = node_seq[0]
     tech_nodes.extend(nodes)
+    depth_in = entry_depth_m
+    for part in parts:
+        assign_depth(part, ref, entry_depth_m=depth_in)
+        # непрерывность профиля: конец подучастка — вход для следующего
+        if part.coords3d:
+            depth_in = -part.coords3d[-1][2]
     new_segments.extend(parts)
+    return parts[0].depth_m if parts else 0.0
 
 
 def _route(grid: ConstraintGrid, a: Point, b: Point):

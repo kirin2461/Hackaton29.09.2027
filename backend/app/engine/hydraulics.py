@@ -29,6 +29,8 @@ class NewSegment:
     length_m: float = 0.0
     cost_rub: float = 0.0
     warnings: list = field(default_factory=list)
+    depth_m: float = 0.0              # максимальная глубина заложения (Спринт 4)
+    coords3d: list | None = None      # координаты с Z (м, отрицательные)
 
     def __post_init__(self):
         self.length_m = _path_length(self.coords)

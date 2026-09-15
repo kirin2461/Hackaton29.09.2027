@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 
 from pyproj import Transformer
-from shapely.geometry import LineString, mapping
+from shapely.geometry import LineString, Point, mapping
 from shapely.ops import transform as shp_transform
 
 
@@ -28,6 +28,9 @@ def write_result(path: Path, data, variants: list, summary: dict) -> None:
     back = Transformer.from_crs(data.crs_work, "EPSG:4326", always_xy=True).transform
 
     def to4326(geom):
+        if geom.has_z:
+            # pyproj отдаёт только (x, y) — Z протаскиваем без изменений
+            return shp_transform(lambda x, y, z: (*back(x, y), z), geom)
         return shp_transform(back, geom)
 
     def feature(geom, props):
@@ -43,7 +46,9 @@ def write_result(path: Path, data, variants: list, summary: dict) -> None:
         rank = variant.get("rank", 0)
 
         for seg in variant["new_segments"]:
-            features.append(feature(LineString(seg.coords), {
+            geom3d = LineString(seg.coords3d) if seg.coords3d \
+                else LineString(seg.coords)
+            props = {
                 "object_type": "new_segment",
                 "variant": rank,
                 "object_id": seg.object_id,
@@ -54,16 +59,26 @@ def write_result(path: Path, data, variants: list, summary: dict) -> None:
                 "length_m": round(seg.length_m, 1),
                 "cost_rub": round(seg.cost_rub, 2),
                 "warnings": seg.warnings,
-            }))
+            }
+            if seg.coords3d:
+                zs = [c[2] for c in seg.coords3d]
+                props["depth_max_m"] = round(-min(zs), 2)
+                props["depth_min_m"] = round(-max(zs), 2)
+                props["z_units"] = "m below ground"
+            features.append(feature(geom3d, props))
 
         for ch in variant["new_chambers"]:
-            features.append(feature(ch["point"], {
+            ch_pt = ch["point"]
+            if ch.get("depth_m"):
+                ch_pt = Point(ch_pt.x, ch_pt.y, -float(ch["depth_m"]))
+            features.append(feature(ch_pt, {
                 "object_type": "new_chamber",
                 "variant": rank,
                 "object_id": ch["object_id"],
                 "kind": ch["kind"],
                 "on_segment_id": ch.get("segment_id"),
                 "cost_rub": round(ch["cost_rub"], 2),
+                "depth_m": ch.get("depth_m"),
             }))
 
         for node in variant["tech_nodes"]:

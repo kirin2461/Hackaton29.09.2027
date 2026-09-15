@@ -67,6 +67,23 @@ class ConstraintGrid:
                     cells.append((i, j))
         return cells
 
+    def forbidden_reason(self, pt) -> str | None:
+        """ID запретной зоны, если точка внутри неё (для §2.9).
+
+        Проверка по ГЕОМЕТРИИ зон (не по растру): A* привязывает цель
+        к ближайшей свободной ячейке и «не чувствует» запрет под точкой
+        подключения — поэтому явный контроль до маршрутизации.
+        """
+        for z in getattr(self, "_zones", []):
+            if z.kind == "forbidden" and z.geom.intersects(pt):
+                return z.object_id
+            if z.kind == "min_distance":
+                dist = float(z.params.get("min_distance_m")
+                             or z.params.get("distance_m") or 10.0)
+                if z.geom.buffer(dist).intersects(pt):
+                    return z.object_id
+        return None
+
     def apply_constraints(self, zones: list[ConstraintZone]) -> None:
         """Растеризовать все ограничения по правилам техприложения."""
         self._zones = zones  # нужны постобработке для проверки углов пересечения

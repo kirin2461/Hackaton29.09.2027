@@ -25,6 +25,7 @@ class RefData:
         self.diameters = sorted(raw["diameters"], key=lambda d: d["dn_mm"])
         self.tariffs = raw["tariffs_rub"]
         self.rules = raw["rules"]
+        self.depth = raw.get("depth", {})  # задание на глубину (Спринт 4)
 
     # ---- диаметры / гидравлика ----
 
@@ -53,3 +54,14 @@ class RefData:
 
     def rule(self, key: str) -> float:
         return float(self.rules[key])
+
+    # ---- задание на глубину ----
+
+    def depth_rule(self, key: str, default: float) -> float:
+        """Правило вертикального профиля; при отсутствии секции — default."""
+        return float(self.depth.get(key, default))
+
+    def depth_for_diameter(self, dn_mm: float) -> float:
+        """Добавка к базовой глубине по диаметру (м)."""
+        table = self.depth.get("per_diameter_m", {})
+        return float(table.get(int(dn_mm), table.get(str(int(dn_mm)), 0.0)))

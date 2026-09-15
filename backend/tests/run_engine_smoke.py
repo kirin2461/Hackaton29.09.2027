@@ -80,6 +80,39 @@ def main() -> int:
         checks.append(("у раздельного варианта нет стволовых участков",
                        len(trunk_in_separate) == 0))
 
+
+    # --- Задание на глубину (Спринт 4) ---
+    seg_feats = [f for f in data["features"]
+                 if f["properties"]["object_type"] == "new_segment"]
+    checks.append(("новые участки с Z-координатами (GeoJSON 3D)",
+                   all(len(c) == 3 for s in seg_feats
+                       for c in s["geometry"]["coordinates"])))
+    step = 0.5
+    checks.append(("отметки глубины квантованы шагом 0.5 м",
+                   all(abs((c[2] / step) - round(c[2] / step)) < 1e-6
+                       for s in seg_feats for c in s["geometry"]["coordinates"])))
+    checks.append(("глубины в допустимом диапазоне (1.0–5.0 м)",
+                   all(1.0 <= s["properties"]["depth_max_m"] <= 5.0
+                       for s in seg_feats)))
+    checks.append(("камеры с отметкой дна (depth_m)",
+                   all(c.get("depth_m") for c in by_type.get("new_chamber", []))))
+
+    # юнит-проверка профиля: глубокая точка подключения -> пандус + множитель
+    from app.engine.depth import assign_depth, target_depth_m
+    from app.engine.hydraulics import NewSegment
+    from app.engine.refdata import RefData
+    ref = RefData()
+    seg = NewSegment(object_id="t", coords=[(0, 0), (100, 0)], flow_tph=10)
+    seg.diameter_mm = 100
+    seg.cost_rub = 1000.0
+    assign_depth(seg, ref, entry_depth_m=4.5)
+    ramp = seg.depth_m
+    checks.append(("пандус от глубокой точки подключения (уклон <= нормы)",
+                   abs(seg.coords3d[0][2]) == 4.5 and ramp == 4.5
+                   and abs(seg.coords3d[-1][2]) == target_depth_m(100, ref)))
+    checks.append(("глубокая прокладка повышает стоимость",
+                   seg.cost_rub > 1000.0 and any("глубокая" in w for w in seg.warnings)))
+
     print("=== Проверки ===")
     ok = True
     for name, passed in checks:

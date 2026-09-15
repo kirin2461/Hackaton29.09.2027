@@ -1,49 +1,113 @@
-"""Оркестрация расчёта: конвейер «файл вошёл — результат вышел» (Спринт 2).
+"""Оркестрация расчёта: конвейер «файл вошёл — результат вышел».
 
-  загрузка → граф сети → кластеры ОКС → точки врезки → маршруты A*
-  → постобработка → диаметры/предельные длины → реконструкция →
-  стоимость → выходной GeoJSON.
+Спринт 2: обязательные правила §2.3–2.6 ТЗ (граф сети, врезки,
+мульти-ОКС, гидравлика, реконструкция, ограничения).
+Спринт 3: до трёх СОДЕРЖАТЕЛЬНО РАЗНЫХ вариантов (§2.8):
+  V1 — совместное подключение, оптимальные врезки;
+  V2 — раздельное подключение каждого ОКС;
+  V3 — совместное подключение, альтернативные точки врезки.
+Ранжирование: 70% стоимость + 30% протяжённость строительных работ.
 
-Частичный результат (§2.9): ОКС/кластер, для которого не нашлось
-точки врезки или маршрута, не роняет расчёт — попадает в перечень
-unconnected с причиной, остальное считается дальше.
+Частичный результат (§2.9): ОКС/кластер без точки врезки или маршрута
+не роняет расчёт — попадает в перечень unconnected с причиной.
 """
 
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from shapely.geometry import Point
 
 from .clustering import cluster_buildings
+from .cost import rank_variants, variant_costs, variant_length_m
 from .exporter import write_result
 from .grid import ConstraintGrid
 from .hydraulics import NewSegment, TechnicalNode, enforce_max_length, size_segment
-from .loader import PipelineInputError, load_contest_geojson
+from .loader import load_contest_geojson
 from .model import ContestData
 from .network import ExistingNetwork
 from .postprocess import check_self_intersection, crossings_with, simplify_path
 from .reconstruction import compute_reconstruction
 from .refdata import RefData
-from .tapping import Tap, choose_tap
+from .tapping import Tap, choose_tap_ranked
+
+
+@dataclass(frozen=True)
+class Strategy:
+    """Стратегия построения варианта (§2.8)."""
+
+    label: str
+    cluster: bool       # совместное подключение кластеров ОКС
+    tap_rank: int       # 0 — лучшая врезка, 1 — вторая и т.д.
+
+
+STRATEGIES = [
+    Strategy("Совместное подключение, оптимальные врезки", cluster=True, tap_rank=0),
+    Strategy("Раздельное подключение", cluster=False, tap_rank=0),
+    Strategy("Совместное подключение, альтернативные врезки", cluster=True, tap_rank=1),
+]
 
 
 def run_pipeline(input_path: Path, result_path: Path,
                  refdata: RefData | None = None) -> dict:
-    """Полный расчёт по конкурсному набору. Возвращает сводку (metadata)."""
+    """Полный расчёт по конкурсному набору: до 3 вариантов + ранжирование."""
     started = time.time()
     ref = refdata or RefData()
 
     data: ContestData = load_contest_geojson(input_path)
     net = ExistingNetwork(data.segments, data.chambers)
-    warnings: list[str] = list(data.warnings)
 
+    # Сетка ограничений общая для всех вариантов (временные блокировки
+    # контуров ОКС снимаются в finally — состояние между вариантами чистое).
     grid = ConstraintGrid(data.bounds, ref)
     grid.apply_constraints(data.constraints)
 
+    variants: list[dict] = []
+    seen_signatures: set[tuple] = set()
+    for strategy in STRATEGIES:
+        variant = _compute_variant(data, net, grid, ref, strategy)
+        signature = _variant_signature(variant)
+        if variants and signature in seen_signatures:
+            continue  # содержательно не отличается — не плодим дубликаты
+        seen_signatures.add(signature)
+        variants.append(variant)
+        if len(variants) >= 3:
+            break
+
+    rank_variants(variants)
+
+    best = variants[0] if variants else _empty_variant()
+    summary = {
+        "engine": "dit-sprint3",
+        "job_elapsed_ms": int((time.time() - started) * 1000),
+        "buildings_total": len(data.buildings),
+        "buildings_connected": len(data.buildings) - len(best["unconnected_ids"]),
+        "unconnected_ids": best["unconnected_ids"],
+        "costs_rub": best["costs"],
+        "length_total_m": best["length_total_m"],
+        "warnings": data.warnings + best["warnings"],
+        "variants": [_variant_public(v) for v in variants],
+    }
+
+    write_result(result_path, data, variants, summary)
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Один вариант
+# ---------------------------------------------------------------------------
+
+def _compute_variant(data: ContestData, net: ExistingNetwork,
+                     grid: ConstraintGrid, ref: RefData,
+                     strategy: Strategy) -> dict:
     max_dirs = int(ref.rule("max_new_directions_per_chamber"))
-    clusters = cluster_buildings(data.buildings, ref.rule("cluster_radius_m"))
+
+    if strategy.cluster:
+        groups = cluster_buildings(data.buildings, ref.rule("cluster_radius_m"))
+    else:
+        groups = [[b] for b in data.buildings.values()]
 
     new_segments: list[NewSegment] = []
     new_chambers: list[dict] = []
@@ -51,64 +115,89 @@ def run_pipeline(input_path: Path, result_path: Path,
     taps: list[Tap] = []
     unconnected: list[dict] = []
     chamber_load: dict[str, int] = {}
+    warnings: list[str] = []
     seq = {"seg": 0, "chamber": 0, "tech": 0}
 
-    for cluster in clusters:
-        # В камеру разветвления — не более max_dirs новых направлений:
-        # крупные кластеры делим на пачки.
-        for pack in _chunk(cluster, max_dirs):
-            _process_pack(pack, net, grid, ref, chamber_load, seq,
+    for group in groups:
+        for pack in _chunk(group, max_dirs):
+            _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                           new_segments, new_chambers, tech_nodes, taps,
                           unconnected, warnings)
 
     recon = compute_reconstruction(net, taps, ref, chamber_load)
+    costs = variant_costs(new_segments, new_chambers, taps, recon, unconnected, ref)
 
-    cost_new = sum(s.cost_rub for s in new_segments)
-    cost_taps = sum(t.tap_cost_rub for t in taps)
-    cost_chambers = sum(c["cost_rub"] for c in new_chambers)
-    cost_recon = recon.total_cost_rub
-    cost_penalty = len(unconnected) * ref.tariff("unconnected_penalty")
-    cost_total = cost_new + cost_taps + cost_chambers + cost_recon + cost_penalty
-
-    summary = {
-        "engine": "dit-sprint2",
-        "job_elapsed_ms": int((time.time() - started) * 1000),
-        "buildings_total": len(data.buildings),
-        "buildings_connected": len(data.buildings) - len(unconnected),
+    return {
+        "label": strategy.label,
+        "new_segments": new_segments,
+        "new_chambers": new_chambers,
+        "tech_nodes": tech_nodes,
+        "taps": taps,
+        "recon": recon,
+        "unconnected": unconnected,
         "unconnected_ids": [u["building_id"] for u in unconnected],
-        "costs_rub": {
-            "new_segments": round(cost_new, 2),
-            "tappings": round(cost_taps, 2),
-            "new_chambers": round(cost_chambers, 2),
-            "reconstruction": round(cost_recon, 2),
-            "unconnected_penalty": round(cost_penalty, 2),
-            "total": round(cost_total, 2),
-        },
-        "length_total_m": round(sum(s.length_m for s in new_segments), 1),
         "warnings": warnings,
+        "costs": costs,
+        "length_total_m": variant_length_m(new_segments),
     }
 
-    write_result(result_path, data, new_segments, new_chambers, tech_nodes,
-                 taps, recon, unconnected, summary)
-    return summary
+
+def _empty_variant() -> dict:
+    return {"unconnected_ids": [], "warnings": [],
+            "costs": {"total": 0.0}, "length_total_m": 0.0}
 
 
-def _process_pack(pack, net, grid, ref, chamber_load, seq,
+def _variant_signature(variant: dict) -> tuple:
+    """Сигнатура для отсева дубликатов: набор врезок + набор трасс."""
+    taps_sig = tuple(sorted(
+        (t.kind, round(t.point.x), round(t.point.y)) for t in variant["taps"]))
+    segs_sig = tuple(sorted(
+        (s.role, round(s.length_m), s.diameter_mm) for s in variant["new_segments"]))
+    return taps_sig + segs_sig
+
+
+def _variant_public(v: dict) -> dict:
+    """Публичная сводка варианта для metadata (без внутренних объектов)."""
+    return {
+        "rank": v.get("rank"),
+        "label": v["label"],
+        "score": v.get("score"),
+        "is_recommended": v.get("is_recommended", False),
+        "status": "partial" if v["unconnected_ids"] else "done",
+        "costs_rub": v["costs"],
+        "length_total_m": v["length_total_m"],
+        "unconnected_ids": v["unconnected_ids"],
+        "counts": {
+            "new_segments": len(v["new_segments"]),
+            "new_chambers": len(v["new_chambers"]),
+            "technical_nodes": len(v["tech_nodes"]),
+            "reconstruction_segments": len(v["recon"].segments),
+            "reconstruction_chambers": len(v["recon"].chambers),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Пачка ОКС внутри варианта
+# ---------------------------------------------------------------------------
+
+def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                   new_segments, new_chambers, tech_nodes, taps,
                   unconnected, warnings) -> None:
-    """Одна пачка ОКС: общая врезка, ствол, ветви, гидравлика."""
+    """Одна пачка ОКС: врезка, (ствол), ветви, гидравлика."""
     flow_total = sum(b.flow_tph for b in pack)
     anchors = [b.anchor for b in pack]
     cx = sum(p.x for p in anchors) / len(anchors)
     cy = sum(p.y for p in anchors) / len(anchors)
     cluster_center = Point(cx, cy)
 
-    tap = choose_tap(cluster_center, flow_total, net, ref, chamber_load)
-    if tap is None:
+    candidates = choose_tap_ranked(cluster_center, flow_total, net, ref, chamber_load)
+    if not candidates:
         for b in pack:
             unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                 "reason": "нет доступных точек врезки в радиусе поиска"})
         return
+    tap = candidates[min(strategy.tap_rank, len(candidates) - 1)]
     taps.append(tap)
     if tap.kind == "existing_chamber":
         chamber_load[tap.chamber_id] = chamber_load.get(tap.chamber_id, 0) + 1
@@ -131,9 +220,8 @@ def _process_pack(pack, net, grid, ref, chamber_load, seq,
 
     try:
         if len(pack) == 1:
-            # Раздельное подключение: врезка → точка подключения ОКС
             b = pack[0]
-            coords = _route(grid, tap.point, b.anchor, ref)
+            coords = _route(grid, tap.point, b.anchor)
             if coords is None:
                 unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                     "reason": "A* не нашёл маршрут до точки подключения"})
@@ -141,9 +229,8 @@ def _process_pack(pack, net, grid, ref, chamber_load, seq,
             _append_segment(coords, flow_total, "branch", b.object_id,
                             grid, ref, seq, new_segments, tech_nodes, warnings)
         else:
-            # Совместное: ствол до камеры разветвления + ветви
             branch_pt = grid_snap_free(grid, cluster_center)
-            trunk = _route(grid, tap.point, branch_pt, ref)
+            trunk = _route(grid, tap.point, branch_pt)
             if trunk is None:
                 for b in pack:
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
@@ -161,7 +248,7 @@ def _process_pack(pack, net, grid, ref, chamber_load, seq,
                             "+".join(b.object_id for b in pack),
                             grid, ref, seq, new_segments, tech_nodes, warnings)
             for b in pack:
-                coords = _route(grid, branch_pt, b.anchor, ref)
+                coords = _route(grid, branch_pt, b.anchor)
                 if coords is None:
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                         "reason": "A* не нашёл маршрут ветви"})
@@ -180,7 +267,7 @@ def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
     if not check_self_intersection(pts):
         warnings.append(f"{owner_id}: самопересечение трассы после упрощения — оставлено как есть")
 
-    bad_crossings = crossings_with(pts, grid_zones(grid))
+    bad_crossings = crossings_with(pts, getattr(grid, "_zones", []))
     if bad_crossings:
         warnings.append(f"{owner_id}: пересечение ограничений {bad_crossings} под углом ниже нормы")
 
@@ -196,7 +283,7 @@ def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
     new_segments.extend(parts)
 
 
-def _route(grid: ConstraintGrid, a: Point, b: Point, ref: RefData):
+def _route(grid: ConstraintGrid, a: Point, b: Point):
     return grid.astar((a.x, a.y), (b.x, b.y))
 
 
@@ -235,11 +322,6 @@ def _dominant_method(pts, grid: ConstraintGrid) -> str:
     return "open_trench"
 
 
-def grid_zones(grid: ConstraintGrid):
-    """Зоны ограничений, сохранённые в сетке (для проверки углов)."""
-    return getattr(grid, "_zones", [])
-
-
 def _chunk(items: list, n: int) -> list[list]:
     return [items[i:i + n] for i in range(0, len(items), n)]
 
@@ -259,13 +341,11 @@ def _assert_tree(segments: list[NewSegment], warnings: list) -> None:
             x = parent[x]
         return x
 
-    edges = 0
     for seg in segments:
         if len(seg.coords) < 2:
             continue
         a = (round(seg.coords[0][0], 1), round(seg.coords[0][1], 1))
         b = (round(seg.coords[-1][0], 1), round(seg.coords[-1][1], 1))
-        edges += 1
         ra, rb = find(a), find(b)
         if ra == rb:
             warnings.append(f"{seg.object_id}: обнаружено кольцо в новой сети")

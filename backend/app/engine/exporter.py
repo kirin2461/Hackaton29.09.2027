@@ -1,8 +1,10 @@
-"""Экспорт результата в выходной GeoJSON (§2.10 ТЗ, Спринт 2).
+"""Экспорт результата в выходной GeoJSON (§2.10 ТЗ).
 
-Единый FeatureCollection в EPSG:4326. Каждый объект — feature с
-properties.object_type и обязательными атрибутами:
+Спринт 3: единый FeatureCollection (EPSG:4326) содержит объекты ВСЕХ
+вариантов — каждый feature помечен properties.variant (ранг варианта,
+1 = рекомендуемый). Сводка по вариантам — в metadata.variants.
 
+Типы объектов (properties.object_type):
   new_segment            — новый участок (диаметр, расход, длина, метод, стоимость)
   new_chamber            — новая камера (врезка в трубу / разветвление)
   technical_node         — техузел предельной длины диаметра
@@ -22,8 +24,7 @@ from shapely.geometry import LineString, mapping
 from shapely.ops import transform as shp_transform
 
 
-def write_result(path: Path, data, new_segments, new_chambers, tech_nodes,
-                 taps, recon, unconnected, summary: dict) -> None:
+def write_result(path: Path, data, variants: list, summary: dict) -> None:
     back = Transformer.from_crs(data.crs_work, "EPSG:4326", always_xy=True).transform
 
     def to4326(geom):
@@ -38,72 +39,82 @@ def write_result(path: Path, data, new_segments, new_chambers, tech_nodes,
 
     features = []
 
-    for seg in new_segments:
-        features.append(feature(LineString(seg.coords), {
-            "object_type": "new_segment",
-            "object_id": seg.object_id,
-            "role": seg.role,
-            "method": seg.method,
-            "diameter_mm": seg.diameter_mm,
-            "flow_tph": round(seg.flow_tph, 3),
-            "length_m": round(seg.length_m, 1),
-            "cost_rub": round(seg.cost_rub, 2),
-            "warnings": seg.warnings,
-        }))
+    for variant in variants:
+        rank = variant.get("rank", 0)
 
-    for ch in new_chambers:
-        features.append(feature(ch["point"], {
-            "object_type": "new_chamber",
-            "object_id": ch["object_id"],
-            "kind": ch["kind"],
-            "on_segment_id": ch.get("segment_id"),
-            "cost_rub": round(ch["cost_rub"], 2),
-        }))
-
-    for node in tech_nodes:
-        features.append(feature(node.point, {
-            "object_type": "technical_node",
-            "object_id": node.object_id,
-            "reason": node.reason,
-        }))
-
-    for tap in taps:
-        if tap.kind == "existing_chamber":
-            features.append(feature(tap.point, {
-                "object_type": "tapping",
-                "chamber_id": tap.chamber_id,
-                "flow_tph": round(tap.flow_tph, 3),
-                "cost_rub": round(tap.tap_cost_rub, 2),
+        for seg in variant["new_segments"]:
+            features.append(feature(LineString(seg.coords), {
+                "object_type": "new_segment",
+                "variant": rank,
+                "object_id": seg.object_id,
+                "role": seg.role,
+                "method": seg.method,
+                "diameter_mm": seg.diameter_mm,
+                "flow_tph": round(seg.flow_tph, 3),
+                "length_m": round(seg.length_m, 1),
+                "cost_rub": round(seg.cost_rub, 2),
+                "warnings": seg.warnings,
             }))
 
-    for rs in recon.segments:
-        seg = data.segments[rs.object_id]
-        features.append(feature(seg.geom, {
-            "object_type": "reconstruction_segment",
-            "object_id": rs.object_id,
-            "existing_diameter_mm": rs.existing_dn,
-            "required_diameter_mm": rs.required_dn,
-            "existing_flow_tph": rs.existing_flow_tph,
-            "added_flow_tph": round(rs.added_flow_tph, 3),
-            "length_m": rs.length_m,
-            "cost_rub": round(rs.cost_rub, 2),
-        }))
+        for ch in variant["new_chambers"]:
+            features.append(feature(ch["point"], {
+                "object_type": "new_chamber",
+                "variant": rank,
+                "object_id": ch["object_id"],
+                "kind": ch["kind"],
+                "on_segment_id": ch.get("segment_id"),
+                "cost_rub": round(ch["cost_rub"], 2),
+            }))
 
-    for rc in recon.chambers:
-        ch = data.chambers[rc.object_id]
-        features.append(feature(ch.geom, {
-            "object_type": "reconstruction_chamber",
-            "object_id": rc.object_id,
-            "reason": rc.reason,
-            "cost_rub": round(rc.cost_rub, 2),
-        }))
+        for node in variant["tech_nodes"]:
+            features.append(feature(node.point, {
+                "object_type": "technical_node",
+                "variant": rank,
+                "object_id": node.object_id,
+                "reason": node.reason,
+            }))
 
-    for u in unconnected:
-        features.append(feature(u["point"], {
-            "object_type": "unconnected",
-            "building_id": u["building_id"],
-            "reason": u["reason"],
-        }))
+        for tap in variant["taps"]:
+            if tap.kind == "existing_chamber":
+                features.append(feature(tap.point, {
+                    "object_type": "tapping",
+                    "variant": rank,
+                    "chamber_id": tap.chamber_id,
+                    "flow_tph": round(tap.flow_tph, 3),
+                    "cost_rub": round(tap.tap_cost_rub, 2),
+                }))
+
+        for rs in variant["recon"].segments:
+            seg = data.segments[rs.object_id]
+            features.append(feature(seg.geom, {
+                "object_type": "reconstruction_segment",
+                "variant": rank,
+                "object_id": rs.object_id,
+                "existing_diameter_mm": rs.existing_dn,
+                "required_diameter_mm": rs.required_dn,
+                "existing_flow_tph": rs.existing_flow_tph,
+                "added_flow_tph": round(rs.added_flow_tph, 3),
+                "length_m": rs.length_m,
+                "cost_rub": round(rs.cost_rub, 2),
+            }))
+
+        for rc in variant["recon"].chambers:
+            ch = data.chambers[rc.object_id]
+            features.append(feature(ch.geom, {
+                "object_type": "reconstruction_chamber",
+                "variant": rank,
+                "object_id": rc.object_id,
+                "reason": rc.reason,
+                "cost_rub": round(rc.cost_rub, 2),
+            }))
+
+        for u in variant["unconnected"]:
+            features.append(feature(u["point"], {
+                "object_type": "unconnected",
+                "variant": rank,
+                "building_id": u["building_id"],
+                "reason": u["reason"],
+            }))
 
     collection = {
         "type": "FeatureCollection",

@@ -69,6 +69,14 @@ public class JobService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "задание не найдено: " + id));
     }
 
+    /** Последние 50 заданий, новые сверху. */
+    @Transactional(readOnly = true)
+    public java.util.List<JobEntity> listRecent() {
+        return repo.findAll(org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Direction.DESC, "createdAt"))
+                .stream().limit(50).collect(java.util.stream.Collectors.toList());
+    }
+
     /** Путь к файлу результата для стриминговой отдачи. */
     @Transactional(readOnly = true)
     public Path resultFile(UUID id) {

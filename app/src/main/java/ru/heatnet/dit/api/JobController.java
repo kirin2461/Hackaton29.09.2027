@@ -49,6 +49,13 @@ public class JobController {
         return JobDto.from(jobs.get(id));
     }
 
+    @Operation(summary = "Последние задания (до 50)")
+    @GetMapping
+    public java.util.List<JobDto> list() {
+        return jobs.listRecent().stream().map(JobDto::from)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
     @Operation(summary = "Выгрузить результат",
             description = "Стриминговая отдача выходного GeoJSON (до 500 МБ).")
     @GetMapping("/{id}/result")

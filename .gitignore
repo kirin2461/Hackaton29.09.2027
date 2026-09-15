@@ -19,3 +19,6 @@ app/target/
 
 # Локальные wheel-пакеты для офлайн-сборки geo-engine
 backend/wheelhouse/
+
+# Статика фронтенда, встраиваемая в jar при сборке
+app/src/main/resources/static/

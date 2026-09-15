@@ -1,0 +1,10 @@
+# .dockerignore корневого контекста (сборка образа app)
+.git
+**/node_modules
+frontend/dist
+app/target
+app/src/main/resources/static
+exchange
+backend/wheelhouse
+backend/app/data/lidar_demo.laz
+backend/app/data/lidar_demo.npz

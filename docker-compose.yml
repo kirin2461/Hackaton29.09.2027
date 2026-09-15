@@ -39,7 +39,9 @@ services:
     # Порт НЕ публикуем: движок — внутренняя вычислительная библиотека сервиса
 
   app:
-    build: ./app
+    build:
+      context: .
+      dockerfile: app/Dockerfile
     container_name: heatnet-app
     environment:
       DB_HOST: db

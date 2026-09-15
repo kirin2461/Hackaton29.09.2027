@@ -1,0 +1,85 @@
+/* Стили страницы ДИТ (/dit) — тёмная профессиональная тема */
+
+.dit {
+  min-height: 100vh;
+  background: #0d1117;
+  color: #dbe4ee;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  padding: 24px clamp(16px, 4vw, 48px);
+  box-sizing: border-box;
+}
+
+.dit-header h1 { margin: 0 0 6px; font-size: 24px; color: #f0f6fc; }
+.dit-header p { margin: 0 0 18px; color: #8b98a9; max-width: 720px; }
+
+.dit-upload {
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed #2d3a4d; border-radius: 12px;
+  padding: 28px; margin-bottom: 16px; cursor: pointer;
+  background: #131a24; transition: border-color .2s, background .2s;
+  font-size: 15px;
+}
+.dit-upload:hover, .dit-upload.drag { border-color: #00b894; background: #14202b; }
+
+.dit-job {
+  display: flex; gap: 16px; align-items: baseline;
+  background: #131a24; border: 1px solid #2d3a4d; border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 16px;
+}
+.dit-job-name { font-weight: 600; }
+.dit-job-status { color: #fdcb6e; }
+.dit-job.status-done .dit-job-status { color: #00b894; }
+.dit-job.status-failed .dit-job-status, .dit-job-err { color: #d63031; }
+
+.dit-error {
+  background: #2d1215; border: 1px solid #d63031; border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 16px; color: #ff8a80;
+}
+
+.dit-tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.dit-tab {
+  flex: 1 1 220px; text-align: left; cursor: pointer;
+  background: #131a24; border: 1px solid #2d3a4d; border-radius: 10px;
+  color: #dbe4ee; padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.dit-tab small { color: #8b98a9; }
+.dit-tab.active { border-color: #00b894; box-shadow: 0 0 0 1px #00b894 inset; }
+
+.dit-main {
+  display: grid; grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 16px; align-items: start;
+}
+@media (max-width: 1100px) { .dit-main { grid-template-columns: 1fr; } }
+
+.dit-map {
+  width: 100%; background: #0a0e14; border: 1px solid #2d3a4d;
+  border-radius: 12px;
+}
+.dit-map.empty { padding: 60px; text-align: center; color: #8b98a9; }
+.dit-legend text { fill: #c9d4e0; font-size: 12px; }
+
+.dit-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.dit-card {
+  background: #131a24; border: 1px solid #2d3a4d; border-radius: 12px;
+  padding: 14px 16px; overflow-x: auto;
+}
+.dit-card h3 { margin: 0 0 10px; font-size: 15px; color: #f0f6fc; }
+.dit-card table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dit-card td, .dit-card th {
+  padding: 5px 8px; border-bottom: 1px solid #223041; text-align: left;
+}
+.dit-card th { color: #8b98a9; font-weight: 500; }
+.dit-card td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dit-card tr.total td { font-weight: 700; color: #00b894; border-bottom: none; }
+.dit-card.warn { border-color: #b8860b; }
+.dit-card.warn ul { margin: 0; padding-left: 18px; font-size: 13px; color: #ffd97a; }
+.dit-note { margin: 8px 0 0; font-size: 12px; color: #8b98a9; }
+
+.dit-download {
+  display: block; text-align: center; text-decoration: none;
+  background: #00b894; color: #06231b; font-weight: 700;
+  padding: 12px; border-radius: 10px;
+}
+.dit-download:hover { background: #02d3a7; }

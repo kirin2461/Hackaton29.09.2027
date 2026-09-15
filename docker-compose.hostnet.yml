@@ -48,7 +48,9 @@ services:
     network_mode: host
 
   app:
-    build: ./app
+    build:
+      context: .
+      dockerfile: app/Dockerfile
     container_name: heatnet-app
     environment:
       DB_HOST: 127.0.0.1

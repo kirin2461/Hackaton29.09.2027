@@ -13,6 +13,21 @@
 ```bash
 docker-compose up --build          # совместимо с docker-compose 1.29.2 и compose plugin v2
 # Swagger UI: http://localhost:8080/swagger-ui.html
+
+### Эксплуатационные заметки (боевой VPS)
+
+- **ARP на хосте-VPS:** контейнеры не отвечают на ARP-запросы хоста,
+  поэтому после `docker compose up -d` нужно запустить
+  `bash scripts/fix_arp.sh` — он прописывает статические neigh-записи
+  для контейнеров стека (иначе порт 8080 «виснет»).
+- **Фронтенд:** npm на сервере нестабилен, поэтому `frontend/dist`
+  собирается заранее и кладётся в репозиторий-каталог; `app/Dockerfile`
+  использует готовый `dist`, если он есть (иначе собирает через
+  зеркало npmmirror).
+- **Сборка jar в обход сети buildkit:** `app/Dockerfile.runtime` +
+  скрипт-сценарий: maven в контейнере с `--network host` и кэшем
+  `/opt/m2cache`, затем `docker build -f app/Dockerfile.runtime
+  -t heatnet-dit-app .`
 ```
 
 | Контейнер | Стек | Роль |

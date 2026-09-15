@@ -1,15 +1,22 @@
-"""Весовая сетка пространственных ограничений + A* (Спринт 2).
+"""Весовая сетка пространственных ограничений + A* (таблица 5.1).
 
-Паттерн растеризации повторяет routing/planner.py (ядро хакатона),
-но вес ячейки задаётся ПРАВИЛАМИ техприложения. По техприложению
-видов правил ровно два (категории «пересечение с условиями» нет):
+Правила техприложения (таблица 5.1):
 
-  forbidden / min_distance — запрет: ячейки непроходимы, для
-                    min_distance непроходим буфер min_distance_m
-  special_passage — спецпроход: проходимо с множителем Kспец
-                    (берётся из параметров зоны, иначе — тарифный
-                    default); ячейки помечаются, чтобы участок
-                    выделить отдельно и посчитать по Kспец
+  forbidden — пересечение запрещено: геометрия зоны непроходима,
+              а МИНИМАЛЬНОЕ РАССТОЯНИЕ (для oks_existing — 5/7/9 м по Ду
+              новой сети, для park/social_area/prohibited_site/water —
+              1,0 м) обеспечивается ВРЕМЕННЫМИ буферными блокировками
+              под конкретный диаметр прокладываемой трассы
+              (clearance_block/dn). Расстояние считается между ГРАНЯМИ
+              расчётных габаритов (таблица 4.2), поэтому к отступу
+              добавляется половина ширины пары труб.
+
+  special_passage — спецпроход: проходимо с множителем Kспец зоны;
+              границы спецучастка: для полигональных зон (road,
+              tram_tracks) — полигон + extent_m с каждой стороны, для
+              линейных/точечных (gas_pipeline, power_cable,
+              heat_network) — ±extent_m от точки пересечения
+              (special_intervals).
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ import math
 from typing import Optional
 
 import numpy as np
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 from shapely.prepared import prep
 
 from .model import ConstraintZone
@@ -34,7 +41,7 @@ _NEIGHBOURS = [
 
 
 class ConstraintGrid:
-    """Растр ограничений и поиск пути A* с штрафом за повороты."""
+    """Растр ограничений и поиск пути A* со штрафом за повороты."""
 
     def __init__(self, bounds: tuple, refdata: RefData):
         cell = float(refdata.rule("grid_cell_m"))
@@ -47,11 +54,12 @@ class ConstraintGrid:
 
         self.blocked = np.zeros((self.nx, self.ny), dtype=bool)
         self.mult = np.ones((self.nx, self.ny), dtype=np.float32)
-        self.zone = np.full((self.nx, self.ny), "", dtype=object)
 
-        self.default_special_mult = float(refdata.tariffs["special_passage_multiplier"])
-        self.zone_k: dict[str, float] = {}  # Kспец по ID зоны special_passage
         self.refdata = refdata
+        self.zone_k: dict[str, float] = {}        # Kспец по ID зоны спецпрохода
+        self.special_zones: list[ConstraintZone] = []
+        self.forbidden_zones: list[ConstraintZone] = []
+        self._clearance_cache: dict[tuple[str, int], object] = {}
 
     # ---------- растеризация ----------
 
@@ -69,61 +77,108 @@ class ConstraintGrid:
                     cells.append((i, j))
         return cells
 
-    def forbidden_reason(self, pt) -> str | None:
-        """ID запретной зоны, если точка внутри неё (для §2.9).
+    def apply_constraints(self, zones: list[ConstraintZone]) -> None:
+        """Растеризовать ограничения: запретные — геометрия, спец — Kспец."""
+        for z in zones:
+            if z.kind == "forbidden":
+                self.forbidden_zones.append(z)
+                for c in self._cells_covered_by(z.geom):
+                    self.blocked[c] = True
+            elif z.kind == "special_passage":
+                rule = self.refdata.restriction_rule(z.restriction_type) or {}
+                k = float(rule.get("k_special", 1.5))
+                self.zone_k[z.object_id] = k
+                self.special_zones.append(z)
+                for c in self._cells_covered_by(z.geom):
+                    if not self.blocked[c]:
+                        self.mult[c] = max(self.mult[c], k)
+
+    # ---------- отступы запретных зон под диаметр (таблица 5.1) ----------
+
+    def clearance_buffer_geom(self, zone: ConstraintZone, dn_mm: float):
+        """Буферная геометрия: отступ + половина ширины габарита (между гранями)."""
+        key = (zone.object_id, int(dn_mm))
+        if key not in self._clearance_cache:
+            dist = self.refdata.min_distance_m(zone.restriction_type or "", dn_mm)
+            dist += self.refdata.envelope_width_m(dn_mm) / 2.0
+            self._clearance_cache[key] = zone.geom.buffer(dist)
+        return self._clearance_cache[key]
+
+    def clearance_block(self, dn_mm: float) -> list[tuple[int, int]]:
+        """Временно заблокировать отступы запретных зон под диаметр трассы.
+
+        Возвращает список ячеек для последующего clearance_unblock.
+        """
+        cells: list[tuple[int, int]] = []
+        for z in self.forbidden_zones:
+            buf = self.clearance_buffer_geom(z, dn_mm)
+            for c in self._cells_covered_by(buf):
+                if not self.blocked[c]:
+                    self.blocked[c] = True
+                    cells.append(c)
+        return cells
+
+    def clearance_unblock(self, cells) -> None:
+        for c in cells:
+            self.blocked[c] = False
+
+    def forbidden_reason(self, pt, dn_mm: float | None = None) -> str | None:
+        """ID запретной зоны, если точка внутри неё/её отступа (для §2.9).
 
         Проверка по ГЕОМЕТРИИ зон (не по растру): A* привязывает цель
         к ближайшей свободной ячейке и «не чувствует» запрет под точкой
         подключения — поэтому явный контроль до маршрутизации.
         """
-        for z in getattr(self, "_zones", []):
-            if z.kind == "forbidden" and z.geom.intersects(pt):
-                return z.object_id
-            if z.kind == "min_distance":
-                dist = float(z.params.get("min_distance_m")
-                             or z.params.get("distance_m") or 10.0)
-                if z.geom.buffer(dist).intersects(pt):
+        for z in self.forbidden_zones:
+            if dn_mm is not None:
+                if self.clearance_buffer_geom(z, dn_mm).intersects(pt):
                     return z.object_id
+            elif z.geom.intersects(pt):
+                return z.object_id
         return None
 
-    def apply_constraints(self, zones: list[ConstraintZone]) -> None:
-        """Растеризовать ограничения — по техприложению два вида правил."""
-        self._zones = zones
-        for z in zones:
-            if z.kind == "forbidden":
-                for c in self._cells_covered_by(z.geom):
-                    self.blocked[c] = True
-            elif z.kind == "min_distance":
-                dist = float(z.params.get("min_distance_m")
-                             or z.params.get("distance_m") or 10.0)
-                for c in self._cells_covered_by(z.geom.buffer(dist)):
-                    self.blocked[c] = True
-            elif z.kind == "special_passage":
-                k = self._zone_k(z)
-                self.zone_k[z.object_id] = k
-                for c in self._cells_covered_by(z.geom):
-                    if not self.blocked[c]:
-                        self.mult[c] = max(self.mult[c], k)
-                        self.zone[c] = f"special_passage:{z.object_id}"
+    # ---------- границы спецучастков (таблица 5.1) ----------
 
-    def _zone_k(self, z: ConstraintZone) -> float:
-        """Kспец зоны спецпрохода: из параметров зоны, иначе тарифный default."""
-        for key in ("k_special", "special_passage_multiplier", "multiplier", "k"):
-            v = z.params.get(key)
-            if v is not None:
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    pass
-        return self.default_special_mult
+    def special_intervals(self, line: LineString) -> list[tuple[float, float, str, float]]:
+        """Интервалы спецпрохода вдоль линии: [(start_m, end_m, zone_id, k)].
+
+        Полигональные зоны (road, tram_tracks): пересечение с полигоном,
+        расширенное на extent_m с каждой стороны. Линейные/точечные
+        (gas_pipeline, power_cable, heat_network): ±extent_m от каждой
+        точки пересечения. Наложения объединяются (берётся max Kспец).
+        """
+        length = line.length
+        if length < 1e-6 or not self.special_zones:
+            return []
+        raw: list[tuple[float, float, str, float]] = []
+        for z in self.special_zones:
+            if not line.intersects(z.geom):
+                continue
+            rule = self.refdata.restriction_rule(z.restriction_type) or {}
+            extent = float(rule.get("extent_m", 0.0))
+            k = self.zone_k.get(z.object_id, float(rule.get("k_special", 1.5)))
+            mode = rule.get("extent_mode", "polygon")
+            if mode == "polygon" or z.geom.geom_type in ("Polygon", "MultiPolygon"):
+                inter = line.intersection(z.geom)
+                pts = _interval_points(inter)
+                if not pts:
+                    continue
+                a = min(line.project(Point(p)) for p in pts)
+                b = max(line.project(Point(p)) for p in pts)
+                raw.append((max(0.0, a - extent), min(length, b + extent),
+                            z.object_id, k))
+            else:
+                inter = line.intersection(z.geom)
+                for p in _interval_points(inter):
+                    d = line.project(Point(p))
+                    raw.append((max(0.0, d - extent), min(length, d + extent),
+                                z.object_id, k))
+        return _merge_intervals(raw)
+
+    # ---------- вариант «альтернативный коридор» ----------
 
     def penalize_corridor(self, paths, radius_m: float, factor: float) -> list:
-        """Временно повысить стоимость ячеек вдоль путей (×factor).
-
-        Нужно для варианта «альтернативный коридор»: A* обходит трассы
-        предыдущих вариантов. Возвращает [(ячейка, старый вес)] для
-        восстановления через restore_mult.
-        """
+        """Временно повысить стоимость ячеек вдоль путей (×factor)."""
         cells: set[tuple[int, int]] = set()
         r = int(math.ceil(radius_m / self.cell))
         for pts in paths:
@@ -224,3 +279,44 @@ class ConstraintGrid:
                     h = math.hypot(nx_ - gc, ny_ - hc)
                     heapq.heappush(open_heap, (ng + h, ng, nb, (cur, dir_idx)))
         return None
+
+
+# ---------------------------------------------------------------------------
+# Утилиты интервалов спецпрохода
+# ---------------------------------------------------------------------------
+
+def _interval_points(geom) -> list[tuple[float, float]]:
+    """Точки геометрии пересечения (для project вдоль линии)."""
+    t = geom.geom_type
+    if t == "Point":
+        return [(geom.x, geom.y)]
+    if t == "MultiPoint":
+        return [(p.x, p.y) for p in geom.geoms]
+    if t == "LineString":
+        return list(geom.coords)
+    if t in ("MultiLineString", "GeometryCollection"):
+        pts: list[tuple[float, float]] = []
+        geoms = geom.geoms if t == "MultiLineString" else geom.geoms
+        for g in geoms:
+            pts.extend(_interval_points(g))
+        return pts
+    if t in ("Polygon", "MultiPolygon"):
+        return [(geom.representative_point().x, geom.representative_point().y)]
+    return []
+
+
+def _merge_intervals(raw: list[tuple[float, float, str, float]]) -> list[tuple[float, float, str, float]]:
+    """Объединить пересекающиеся интервалы (Kспец — максимальный)."""
+    if not raw:
+        return []
+    raw.sort(key=lambda iv: iv[0])
+    merged = [list(raw[0])]
+    for a, b, zid, k in raw[1:]:
+        last = merged[-1]
+        if a <= last[1] + 1e-6:
+            last[1] = max(last[1], b)
+            if k > last[3]:
+                last[2], last[3] = zid, k
+        else:
+            merged.append([a, b, zid, k])
+    return [(a, b, zid, k) for a, b, zid, k in merged]

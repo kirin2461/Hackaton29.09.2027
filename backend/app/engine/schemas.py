@@ -1,9 +1,8 @@
-"""Pydantic-схемы конкурсного входного GeoJSON (техприложение к ТЗ).
+"""Pydantic-схемы конкурсного входного GeoJSON (§2.1–2.2 техприложения).
 
-Спринт 1 — каркас: зафиксированы типы объектов и ключевые атрибуты.
-Все справочники (пропускная способность диаметров, предельные длины,
-тарифы, правила ограничений) со Спринта 2 живут во внешних конфигах —
-никаких констант конкурсного набора в коде (§2.14 ТЗ).
+Справочные схемы входных атрибутов (таблица 2.2). Все справочники
+(пропускная способность, предельные длины, тарифы, правила ограничений)
+живут во внешнем reference.yaml — никаких констант набора в коде (§2.14).
 """
 
 from typing import Optional
@@ -11,53 +10,68 @@ from typing import Optional
 from pydantic import BaseModel
 
 
-class ExistingSegmentProps(BaseModel):
-    """Участок существующей тепловой сети."""
+class SourceProps(BaseModel):
+    """Источник теплоснабжения (source)."""
 
-    object_id: str
-    diameter_mm: Optional[float] = None   # условный диаметр, мм
-    flow_tph: Optional[float] = None      # расчётный расход, т/ч
-    next_object_id: Optional[str] = None  # ID следующего объекта к источнику
+    id: str
+
+    class Config:
+        extra = "allow"
+
+
+class HeatNetworkProps(BaseModel):
+    """Участок существующей тепловой сети (heat_network)."""
+
+    id: str
+    diameter: Optional[float] = None           # условный диаметр, мм
+    flow_tph: Optional[float] = None           # расчётный расход, т/ч
+    upstream_object_id: Optional[str] = None   # следующий объект к источнику
 
     class Config:
         extra = "allow"
 
 
 class HeatChamberProps(BaseModel):
-    """Тепловая камера (лимит — 4 примыкания, из них ≤3 в новых направлениях)."""
+    """Существующая тепловая камера (heat_chamber).
 
-    object_id: str
-    occupied_connections: int = 0
+    diameter — максимальный условный диаметр существующих участков,
+    уже примыкающих к камере (§2.2). Лимит примыканий — 4 (§8.2).
+    """
 
-    class Config:
-        extra = "allow"
-
-
-class ProspectiveBuildingProps(BaseModel):
-    """Перспективный ОКС (объект капитального строительства)."""
-
-    object_id: str
-    flow_tph: float  # расход, т/ч
+    id: str
+    diameter: Optional[float] = None
+    upstream_object_id: Optional[str] = None
 
     class Config:
         extra = "allow"
 
 
-class ConnectionPointProps(BaseModel):
-    """Точка подключения ОКС."""
+class OksFutureProps(BaseModel):
+    """Перспективный ОКС (oks_future)."""
 
-    object_id: str
-    building_id: Optional[str] = None
+    id: str
+    flow_tph: float                # расход для расчёта новой сети, т/ч
+    heat_load: Optional[float] = None  # справочная тепловая нагрузка, Гкал/ч
 
     class Config:
         extra = "allow"
 
 
-class ConstraintProps(BaseModel):
-    """Пространственное ограничение: запрет / мин. расстояние /
-    пересечение с условиями / спецпроход отдельным участком."""
+class OksConnectionPointProps(BaseModel):
+    """Точка подключения перспективного ОКС (oks_connection_point)."""
 
-    constraint_type: str
+    id: str
+    oks_id: Optional[str] = None   # ID объекта oks_future
+
+    class Config:
+        extra = "allow"
+
+
+class RestrictionProps(BaseModel):
+    """Пространственное ограничение (restriction, таблица 5.1)."""
+
+    id: str
+    restriction_type: str          # road / tram_tracks / gas_pipeline / ...
 
     class Config:
         extra = "allow"

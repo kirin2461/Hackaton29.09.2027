@@ -1,17 +1,17 @@
-"""Экспорт результата в выходной GeoJSON (§2.10 ТЗ).
+"""Экспорт результата в выходной GeoJSON — строго по разделу 10.
 
-Спринт 3: единый FeatureCollection (EPSG:4326) содержит объекты ВСЕХ
-вариантов — каждый feature помечен properties.variant (ранг варианта,
-1 = рекомендуемый). Сводка по вариантам — в metadata.variants.
+Один файл FeatureCollection (EPSG:4326) содержит объекты ВСЕХ вариантов
+(variant_id у каждого объекта). Ровно семь типов объектов, у каждого —
+только свой набор атрибутов (таблицы 10.1–10.7), без посторонних полей
+и без metadata:
 
-Типы объектов (properties.object_type):
-  new_segment            — новый участок (диаметр, расход, длина, метод, стоимость)
-  new_chamber            — новая камера (врезка в трубу / разветвление)
-  technical_node         — техузел предельной длины диаметра
-  tapping                — точка врезки (в существующую камеру)
-  reconstruction_segment — участок существующей сети под реконструкцию
-  reconstruction_chamber — камера под реконструкцию
-  unconnected            — ОКС без маршрута (§2.9: частичный результат)
+  heat_network                 — новый линейный участок;
+  tie_in                       — точка врезки в существующую сеть;
+  heat_network_reconstruction  — реконструируемая часть существующего участка;
+  heat_chamber                 — новая тепловая камера;
+  heat_chamber_reconstruction  — реконструкция существующей камеры;
+  technical_node               — технический узел;
+  variant_summary              — сводная запись варианта (geometry: null).
 """
 
 from __future__ import annotations
@@ -20,120 +20,148 @@ import json
 from pathlib import Path
 
 from pyproj import Transformer
-from shapely.geometry import LineString, Point, mapping
+from shapely.geometry import LineString, mapping
 from shapely.ops import transform as shp_transform
+
+from .reconstruction import Reconstruction
 
 
 def write_result(path: Path, data, variants: list, summary: dict) -> None:
     back = Transformer.from_crs(data.crs_work, "EPSG:4326", always_xy=True).transform
 
     def to4326(geom):
-        if geom.has_z:
-            # pyproj отдаёт только (x, y) — Z протаскиваем без изменений
-            return shp_transform(lambda x, y, z: (*back(x, y), z), geom)
         return shp_transform(back, geom)
 
     def feature(geom, props):
         return {
             "type": "Feature",
-            "geometry": mapping(to4326(geom)),
+            "geometry": mapping(to4326(geom)) if geom is not None else None,
             "properties": props,
         }
+
+    def chamber_existing_dn(ch) -> float:
+        if ch.diameter_mm:
+            return ch.diameter_mm
+        adj = [s.diameter_mm or 0.0 for s in data.segments.values()
+               if s.next_object_id == ch.object_id]
+        return max(adj) if adj else 0.0
 
     features = []
 
     for variant in variants:
-        rank = variant.get("rank", 0)
+        vid = str(variant.get("rank", 0))
 
+        # --- §10.1: новые линейные участки ---
         for seg in variant["new_segments"]:
-            geom3d = LineString(seg.coords3d) if seg.coords3d \
-                else LineString(seg.coords)
-            props = {
-                "object_type": "new_segment",
-                "variant": rank,
-                "object_id": seg.object_id,
-                "role": seg.role,
-                "method": seg.method,
-                "diameter_mm": seg.diameter_mm,
+            features.append(feature(LineString(seg.coords), {
+                "id": seg.object_id,
+                "object_type": "heat_network",
+                "variant_id": vid,
+                "start_node_id": seg.start_node_id,
+                "end_node_id": seg.end_node_id,
                 "flow_tph": round(seg.flow_tph, 3),
-                "length_m": round(seg.length_m, 1),
-                "cost_rub": round(seg.cost_rub, 2),
-                "warnings": seg.warnings,
-            }
-            if seg.coords3d:
-                zs = [c[2] for c in seg.coords3d]
-                props["depth_max_m"] = round(-min(zs), 2)
-                props["depth_min_m"] = round(-max(zs), 2)
-                props["z_units"] = "m below ground"
-            features.append(feature(geom3d, props))
-
-        for ch in variant["new_chambers"]:
-            ch_pt = ch["point"]
-            if ch.get("depth_m"):
-                ch_pt = Point(ch_pt.x, ch_pt.y, -float(ch["depth_m"]))
-            features.append(feature(ch_pt, {
-                "object_type": "new_chamber",
-                "variant": rank,
-                "object_id": ch["object_id"],
-                "kind": ch["kind"],
-                "on_segment_id": ch.get("segment_id"),
-                "cost_rub": round(ch["cost_rub"], 2),
-                "depth_m": ch.get("depth_m"),
+                "diameter": int(seg.diameter_mm),
+                "length": round(seg.length_m, 1),
+                "laying_method": seg.method,   # base | special
+                "depth_start": seg.depth_start,  # null в 2D-задаче (§8.1)
+                "depth_end": seg.depth_end,
+                "cost": round(seg.cost_rub, 2),
             }))
 
-        for node in variant["tech_nodes"]:
-            features.append(feature(node.point, {
-                "object_type": "technical_node",
-                "variant": rank,
-                "object_id": node.object_id,
-                "reason": node.reason,
-            }))
-
+        # --- §10.2: точки врезки ---
         for tap in variant["taps"]:
             if tap.kind == "existing_chamber":
-                features.append(feature(tap.point, {
-                    "object_type": "tapping",
-                    "variant": rank,
-                    "chamber_id": tap.chamber_id,
-                    "flow_tph": round(tap.flow_tph, 3),
-                    "cost_rub": round(tap.tap_cost_rub, 2),
-                }))
-
-        for rs in variant["recon"].segments:
-            seg = data.segments[rs.object_id]
-            features.append(feature(seg.geom, {
-                "object_type": "reconstruction_segment",
-                "variant": rank,
-                "object_id": rs.object_id,
-                "existing_diameter_mm": rs.existing_dn,
-                "required_diameter_mm": rs.required_dn,
-                "existing_flow_tph": rs.existing_flow_tph,
-                "added_flow_tph": round(rs.added_flow_tph, 3),
-                "length_m": rs.length_m,
-                "cost_rub": round(rs.cost_rub, 2),
+                ch = data.chambers[tap.chamber_id]
+                existing_id = tap.chamber_id
+                existing_type = "heat_chamber"
+                existing_dn = chamber_existing_dn(ch)
+            else:
+                seg0 = data.segments[tap.segment_id]
+                existing_id = tap.segment_id
+                existing_type = "heat_network"
+                existing_dn = seg0.diameter_mm or 0.0
+            features.append(feature(tap.point, {
+                "id": tap.node_id,
+                "object_type": "tie_in",
+                "variant_id": vid,
+                "existing_object_id": existing_id,
+                "existing_object_type": existing_type,
+                "existing_diameter": int(existing_dn),
+                "required_diameter": int(tap.required_dn),
+                "cost": round(tap.tap_cost_rub, 2),
             }))
 
-        for rc in variant["recon"].chambers:
-            ch = data.chambers[rc.object_id]
-            features.append(feature(ch.geom, {
-                "object_type": "reconstruction_chamber",
-                "variant": rank,
-                "object_id": rc.object_id,
-                "reason": rc.reason,
-                "cost_rub": round(rc.cost_rub, 2),
+        # --- §10.3: реконструкция линейных участков ---
+        recon: Reconstruction = variant["recon"]
+        for rs in recon.segments:
+            features.append(feature(rs.geom, {
+                "id": rs.object_id,
+                "object_type": "heat_network_reconstruction",
+                "variant_id": vid,
+                "existing_object_id": rs.existing_object_id,
+                "existing_flow_tph": rs.existing_flow,
+                "added_flow_tph": rs.added_flow,
+                "calculated_flow_tph": rs.calculated_flow,
+                "existing_diameter": int(rs.existing_dn),
+                "required_diameter": int(rs.required_dn),
+                "length": rs.length_m,
+                "cost": rs.cost_rub,
             }))
 
-        for u in variant["unconnected"]:
-            features.append(feature(u["point"], {
-                "object_type": "unconnected",
-                "variant": rank,
-                "building_id": u["building_id"],
-                "reason": u["reason"],
+        # --- §10.4: новые камеры ---
+        for ch in variant["new_chambers"]:
+            features.append(feature(ch["point"], {
+                "id": ch["object_id"],
+                "object_type": "heat_chamber",
+                "variant_id": vid,
+                "diameter": int(ch["diameter_mm"]),
+                "cost": round(ch["cost_rub"], 2),
             }))
+
+        # --- §10.5: реконструкция существующих камер ---
+        for rc in recon.chambers:
+            features.append(feature(data.chambers[rc.existing_object_id].geom, {
+                "id": rc.object_id,
+                "object_type": "heat_chamber_reconstruction",
+                "variant_id": vid,
+                "existing_object_id": rc.existing_object_id,
+                "existing_diameter": int(rc.existing_dn),
+                "required_diameter": int(rc.required_dn),
+                "cost": rc.cost_rub,
+            }))
+
+        # --- §10.6: технические узлы ---
+        for node in variant["tech_nodes"]:
+            features.append(feature(node.point, {
+                "id": node.object_id,
+                "object_type": "technical_node",
+                "variant_id": vid,
+            }))
+
+        # --- §10.7: сводная запись варианта (geometry: null) ---
+        costs = variant["costs"]
+        lengths = variant["lengths"]
+        features.append(feature(None, {
+            "id": f"summary-{vid}",
+            "object_type": "variant_summary",
+            "variant_id": vid,
+            "rank": int(variant.get("rank", 0)),
+            "construction_cost": costs["construction_cost"],
+            "chamber_construction_cost": costs["chamber_construction_cost"],
+            "tie_in_cost": costs["tie_in_cost"],
+            "reconstruction_cost": costs["reconstruction_cost"],
+            "chamber_reconstruction_cost": costs["chamber_reconstruction_cost"],
+            "unconnected_penalty": costs["unconnected_penalty"],
+            "calculated_cost": costs["calculated_cost"],
+            "new_network_length": lengths["new_network_length"],
+            "reconstruction_length": lengths["reconstruction_length"],
+            "length": lengths["length"],
+            "score": variant.get("score"),
+            "unconnected_oks_ids": list(variant["unconnected_ids"]),
+        }))
 
     collection = {
         "type": "FeatureCollection",
-        "metadata": summary,
         "features": features,
     }
 

@@ -1,32 +1,39 @@
-"""Потоковый загрузчик конкурсного GeoJSON (Спринт 2).
+"""Потоковый загрузчик конкурсного GeoJSON (официальная схема §2.1).
 
 Файл до 3 ГБ читается ijson'ом — объекты разбираются по одному,
 в память не поднимаются целиком. СК формализованы техприложением:
 вход — EPSG:4326 (валидируется, иное отклоняется), все расчёты —
-в EPSG:32637 (явная проекция pyproj; переопределяется переменными
-ENGINE_SOURCE_CRS / ENGINE_WORK_CRS).
+в EPSG:32637 (переопределяется ENGINE_SOURCE_CRS / ENGINE_WORK_CRS).
+
+Типы объектов — таблица 2.1 техприложения (source, heat_network,
+heat_chamber, oks_future, oks_connection_point, oks_existing,
+restriction); сохранены синонимы ранних внутренних наборов.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 import ijson
 from pyproj import Transformer
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.ops import transform as shp_transform
 
-from .model import Building, Chamber, ConstraintZone, ContestData, Segment
+from .model import Building, Chamber, ConstraintZone, ContestData, Segment, Source
 
 
 class PipelineInputError(Exception):
     """Входной файл не соответствует конкурсной схеме."""
 
 
-# Синонимы типов объектов (техприложение может назвать их иначе)
+# Типы объектов: официальные (таблица 2.1) + синонимы ранних наборов
 _OBJECT_TYPE_ALIASES = {
+    "source": "source",
+    "heat_source": "source",
+    "heat_network": "existing_segment",
     "existing_segment": "existing_segment",
     "network_segment": "existing_segment",
     "existing_network": "existing_segment",
@@ -34,25 +41,44 @@ _OBJECT_TYPE_ALIASES = {
     "heat_chamber": "chamber",
     "chamber": "chamber",
     "thermal_chamber": "chamber",
+    "oks_future": "prospective_building",
     "prospective_building": "prospective_building",
     "building": "prospective_building",
     "oks": "prospective_building",
+    "oks_connection_point": "connection_point",
     "connection_point": "connection_point",
-    "constraint": "constraint",
+    "oks_existing": "oks_existing",
+    "existing_building": "oks_existing",
     "restriction": "constraint",
+    "constraint": "constraint",
     "spatial_constraint": "constraint",
 }
 
-# Синонимы видов ограничений
-_CONSTRAINT_KIND_ALIASES = {
-    "forbidden": "forbidden",
-    "no_build": "forbidden",
-    "ban": "forbidden",
-    "min_distance": "min_distance",
-    "distance": "min_distance",
-    "special_passage": "special_passage",
-    "special": "special_passage",
+# Синонимы типов ограничений → канонические restriction_type (таблица 5.1)
+_RESTRICTION_TYPE_ALIASES = {
+    "road": "road",
+    "tram_tracks": "tram_tracks",
+    "tram": "tram_tracks",
+    "gas_pipeline": "gas_pipeline",
+    "gas": "gas_pipeline",
+    "power_cable": "power_cable",
+    "cable": "power_cable",
+    "heat_network": "heat_network",
+    "park": "park",
+    "social_area": "social_area",
+    "prohibited_site": "prohibited_site",
+    "water": "water",
+    "oks_existing": "oks_existing",
+    # ранние внутренние виды
+    "forbidden": "prohibited_site",
+    "no_build": "prohibited_site",
+    "ban": "prohibited_site",
+    "special_passage": "road",
+    "special": "road",
+    "min_distance": "oks_existing",
 }
+
+_EPSG_RE = re.compile(r"EPSG[^0-9]{0,4}(\d{4,5})", re.IGNORECASE)
 
 
 def _pick(props: dict, *names: str) -> Any:
@@ -71,7 +97,7 @@ def _to_float_coords(coords):
 
 
 def _build_geom(geom: dict):
-    """Shapely-геометрия из GeoJSON-геометрии (Point/LineString/Polygon)."""
+    """Shapely-геометрия из GeoJSON (Point/LineString/Polygon/MultiPolygon)."""
     if not geom:
         return None
     gtype = geom.get("type")
@@ -83,12 +109,9 @@ def _build_geom(geom: dict):
     if gtype == "Polygon":
         shell, *holes = coords
         return Polygon(shell, holes)
+    if gtype == "MultiPolygon":
+        return MultiPolygon([Polygon(p[0], p[1:]) for p in coords])
     return None
-
-
-import re
-
-_EPSG_RE = re.compile(r"EPSG[^0-9]{0,4}(\d{4,5})", re.IGNORECASE)
 
 
 def _epsg_code(text: str) -> Optional[int]:
@@ -108,8 +131,27 @@ def _declared_crs(path: Path) -> Optional[str]:
     return None
 
 
-def load_contest_geojson(path: Path, max_scan_points: int = 50) -> ContestData:
-    """Разобрать конкурсный GeoJSON в доменную модель (EPSG:32637).
+def _resolve_constraint(oid: str, props: dict, geom, refdata,
+                        warnings: list[str]) -> Optional[ConstraintZone]:
+    """Свести restriction к виду правила (forbidden / special_passage).
+
+    Тип ограничения — из restriction_type (таблица 5.1); правила — из
+    справочника reference.yaml. Неизвестный тип — предупреждение и пропуск.
+    """
+    raw = str(_pick(props, "restriction_type", "constraint_type", "kind") or "").strip()
+    rtype = _RESTRICTION_TYPE_ALIASES.get(raw, raw)
+    rule = refdata.restriction_rule(rtype) if refdata else None
+    if rule is None:
+        warnings.append(
+            f"{oid}: неизвестный тип ограничения '{raw}' — пропущен")
+        return None
+    kind = "forbidden" if rule.get("rule") == "forbidden" else "special_passage"
+    return ConstraintZone(object_id=oid, geom=geom, kind=kind,
+                          params=dict(props), restriction_type=rtype)
+
+
+def load_contest_geojson(path: Path, refdata=None, max_scan_points: int = 50) -> ContestData:
+    """Разобрать конкурсный GeoJSON в доменную модель (метрическая СК).
 
     Однопроходный потоковый разбор. Перед разбором валидируется СК
     входа: по техприложению это EPSG:4326; если файл объявляет другую
@@ -130,10 +172,10 @@ def load_contest_geojson(path: Path, max_scan_points: int = 50) -> ContestData:
     fwd = Transformer.from_crs(crs_from, crs_work, always_xy=True).transform
     project = lambda g: shp_transform(fwd, g) if g is not None else None  # noqa: E731
 
-    # --- потоковый разбор ---
     segments: dict[str, Segment] = {}
     chambers: dict[str, Chamber] = {}
     buildings: dict[str, Building] = {}
+    sources: dict[str, Source] = {}
     conn_points: dict[str, Point] = {}
     conn_owner: dict[str, str] = {}
     constraints: list[ConstraintZone] = []
@@ -158,25 +200,34 @@ def load_contest_geojson(path: Path, max_scan_points: int = 50) -> ContestData:
             if geom is None or kind is None:
                 continue
             _extend_bounds(geom)
-            oid = str(_pick(props, "object_id", "id", "uid") or f"{kind}:{len(segments) + len(chambers) + len(buildings)}")
+            oid = str(_pick(props, "object_id", "id", "uid")
+                      or f"{kind}:{len(segments) + len(chambers) + len(buildings)}")
 
-            if kind == "existing_segment":
+            if kind == "source":
+                sources[oid] = Source(
+                    object_id=oid,
+                    geom=geom if isinstance(geom, Point) else geom.centroid)
+            elif kind == "existing_segment":
                 if not isinstance(geom, LineString):
                     warnings.append(f"{oid}: сегмент сети не LineString — пропущен")
                     continue
                 segments[oid] = Segment(
                     object_id=oid,
                     geom=geom,
-                    diameter_mm=_as_float(_pick(props, "diameter_mm", "diameter", "dn_mm", "dn")),
+                    diameter_mm=_as_float(_pick(props, "diameter", "diameter_mm", "dn_mm", "dn")),
                     flow_tph=_as_float(_pick(props, "flow_tph", "flow", "consumption_tph")) or 0.0,
-                    next_object_id=_as_str(_pick(props, "next_object_id", "next_id", "next")),
+                    next_object_id=_as_str(_pick(props, "upstream_object_id",
+                                                 "next_object_id", "next_id", "next")),
                 )
             elif kind == "chamber":
                 chambers[oid] = Chamber(
                     object_id=oid,
                     geom=geom if isinstance(geom, Point) else geom.centroid,
-                    occupied_connections=int(_as_float(_pick(props, "occupied_connections", "occupied")) or 0),
-                    next_object_id=_as_str(_pick(props, "next_object_id", "next_id", "next")),
+                    diameter_mm=_as_float(_pick(props, "diameter", "diameter_mm", "dn_mm", "dn")),
+                    occupied_connections=int(_as_float(
+                        _pick(props, "occupied_connections", "occupied")) or 0),
+                    next_object_id=_as_str(_pick(props, "upstream_object_id",
+                                                 "next_object_id", "next_id", "next")),
                 )
             elif kind == "prospective_building":
                 buildings[oid] = Building(
@@ -187,32 +238,36 @@ def load_contest_geojson(path: Path, max_scan_points: int = 50) -> ContestData:
             elif kind == "connection_point":
                 pt = geom if isinstance(geom, Point) else geom.centroid
                 conn_points[oid] = pt
-                owner = _as_str(_pick(props, "building_id", "oks_id", "parent_id"))
+                owner = _as_str(_pick(props, "oks_id", "building_id", "parent_id"))
                 if owner:
                     conn_owner[oid] = owner
+            elif kind == "oks_existing":
+                # Существующий ОКС — запретная зона с отступом по Ду (§5.1)
+                constraints.append(ConstraintZone(
+                    object_id=oid, geom=geom, kind="forbidden",
+                    params=dict(props), restriction_type="oks_existing"))
             elif kind == "constraint":
-                raw_kind = str(_pick(props, "constraint_type", "kind") or "").strip()
-                ckind = _CONSTRAINT_KIND_ALIASES.get(raw_kind)
-                if ckind is None:
-                    warnings.append(f"{oid}: неизвестный тип ограничения '{raw_kind}' — пропущен")
-                    continue
-                constraints.append(ConstraintZone(object_id=oid, geom=geom, kind=ckind, params=props))
+                zone = _resolve_constraint(oid, props, geom, refdata, warnings)
+                if zone is not None:
+                    constraints.append(zone)
 
-    # Привязка точек подключения к ОКС
+    # Привязка точек подключения к ОКС (§2.2: oks_id)
     for cp_id, pt in conn_points.items():
         owner = conn_owner.get(cp_id)
         if owner and owner in buildings:
             buildings[owner].connection_point = pt
+            buildings[owner].connection_point_id = cp_id
         else:
             # Точка без владельца — ближайший ОКС
             best = min(buildings.values(), key=lambda b: b.anchor.distance(pt), default=None)
             if best is not None and best.anchor.distance(pt) < 200:
                 best.connection_point = pt
+                best.connection_point_id = cp_id
 
     if not segments and not chambers:
         raise PipelineInputError(
             "во входном файле не найдено объектов конкурсной схемы "
-            "(existing_segment / chamber с properties.object_type)"
+            "(heat_network / heat_chamber с properties.object_type)"
         )
     if not buildings:
         warnings.append("перспективные ОКС не найдены — результат пуст")
@@ -228,6 +283,7 @@ def load_contest_geojson(path: Path, max_scan_points: int = 50) -> ContestData:
         crs_from=crs_from,
         crs_work=crs_work,
         bounds=tuple(bounds),
+        sources=sources,
         warnings=warnings,
     )
 

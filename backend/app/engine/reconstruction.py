@@ -1,16 +1,31 @@
-"""Реконструкция существующей сети (§2.5 ТЗ, Спринт 2).
+"""Реконструкция существующей сети (раздел 7) и камер (§8.2).
 
-Дополнительный расход от каждой точки врезки поднимается по цепочке
-«ID следующего объекта» до источника и суммируется. Для каждого участка
-сравнивается требуемый диаметр (существующий расход + добавка) с
-существующим — при нехватке участок идёт в реконструкцию со стоимостью.
-Камера, примыкания которой исчерпали лимит 4, тоже реконструируется.
+Раздел 7:
+  - дополнительный расход от каждой точки врезки поднимается по цепочке
+    upstream_object_id до источника и СУММИРУЕТСЯ на общих частях;
+  - врезка в середину участка → реконструируется только ЧАСТЬ участка
+    от точки врезки по направлению к источнику (partial geometry);
+  - несколько врезок на одном участке → участок режется на интервалы,
+    на каждом свой суммарный добавленный расход;
+  - требуемый диаметр — минимальный подходящий под (существующий +
+    добавленный) расход по таблице 4.1;
+  - стоимость = длина части × ставка РЕКОНСТРУКЦИИ требуемого Ду
+    (таблица 4.1); Kспец и Kгл НЕ применяются;
+  - каждая реконструируемая часть — отдельный объект со своей геометрией.
+
+Раздел 8.2 (камеры):
+  - камера реконструируется, если требуемый Ду (максимум по примыкающим
+    участкам ПОСЛЕ реконструкции и по врезкам в эту камеру) больше
+    входного диаметра камеры; стоимость — по шкале §8.2; один раз на камеру.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from shapely.geometry import LineString
+
+from .hydraulics import subline
 from .network import ExistingNetwork
 from .refdata import RefData
 from .tapping import Tap
@@ -18,78 +33,171 @@ from .tapping import Tap
 
 @dataclass
 class ReconSegment:
-    object_id: str
+    object_id: str            # recon-N (новый id объекта реконструкции)
+    existing_object_id: str   # id исходного участка (§10.3)
     existing_dn: float
     required_dn: float
-    existing_flow_tph: float
-    added_flow_tph: float
+    existing_flow: float
+    added_flow: float
+    calculated_flow: float
     length_m: float
     cost_rub: float
+    geom: LineString          # реконструируемая ЧАСТЬ участка
 
 
 @dataclass
 class ReconChamber:
-    object_id: str
-    reason: str
+    object_id: str            # recon-ch-N
+    existing_object_id: str   # id исходной камеры
+    existing_dn: float
+    required_dn: float
     cost_rub: float
 
 
 @dataclass
 class Reconstruction:
-    added_flows: dict            # segment_id -> добавленный расход
-    segments: list               # list[ReconSegment]
-    chambers: list               # list[ReconChamber]
+    segments: list            # list[ReconSegment]
+    chambers: list            # list[ReconChamber]
+
+    @property
+    def segments_cost_rub(self) -> float:
+        return sum(s.cost_rub for s in self.segments)
+
+    @property
+    def chambers_cost_rub(self) -> float:
+        return sum(c.cost_rub for c in self.chambers)
 
     @property
     def total_cost_rub(self) -> float:
-        return sum(s.cost_rub for s in self.segments) + sum(c.cost_rub for c in self.chambers)
+        return self.segments_cost_rub + self.chambers_cost_rub
+
+
+def _source_end_pos(net: ExistingNetwork, seg) -> float:
+    """Отметка (0 или L) конца участка, БЛИЖАЙШЕГО к следующему объекту цепочки."""
+    nxt = net.get(seg.next_object_id) if seg.next_object_id else None
+    L = seg.geom.length
+    if nxt is None:
+        return L  # обрыв цепочки = источник за дальним концом
+    g = getattr(nxt, "geom", None)
+    if g is None:
+        return L
+    p0 = seg.geom.interpolate(0.0)
+    p1 = seg.geom.interpolate(L)
+    return 0.0 if g.distance(p0) <= g.distance(p1) else L
 
 
 def compute_reconstruction(net: ExistingNetwork, taps: list[Tap],
-                           refdata: RefData, chamber_load: dict[str, int]) -> Reconstruction:
+                           refdata: RefData, warnings: list[str] | None = None) -> Reconstruction:
     """Полный расчёт реконструкции по всем точкам врезки."""
-    added: dict[str, float] = {}
+    warnings = warnings if warnings is not None else []
+
+    # --- накопление интервалов добавленного расхода по участкам ---
+    # segment_id -> [(start_m, end_m, flow)]
+    intervals: dict[str, list[tuple[float, float, float]]] = {}
+
+    def _add(sid: str, a: float, b: float, flow: float) -> None:
+        lo, hi = min(a, b), max(a, b)
+        if hi - lo > 0.01:
+            intervals.setdefault(sid, []).append((lo, hi, flow))
+
     for tap in taps:
         if not tap.chain_start_id:
             continue
-        for oid in net.chain_to_source(tap.chain_start_id):
+        flow = tap.flow_tph
+        if tap.kind == "new_chamber_on_segment" and tap.segment_id:
+            # врезка в середину участка: часть от врезки к источнику
+            seg = net.segments[tap.segment_id]
+            L = seg.geom.length
+            src_pos = _source_end_pos(net, seg)
+            _add(tap.segment_id, tap.along_m, src_pos, flow)
+            start_from = seg.next_object_id
+        else:
+            # врезка в камеру: цепочка начинается со следующего объекта
+            ch = net.chambers.get(tap.chain_start_id)
+            start_from = ch.next_object_id if ch else None
+        for oid in net.chain_to_source(start_from) if start_from else []:
             if oid in net.segments:
-                added[oid] = added.get(oid, 0.0) + tap.flow_tph
+                seg = net.segments[oid]
+                _add(oid, 0.0, seg.geom.length, flow)
 
+    # --- режем участки на элементарные части, считаем требуемый Ду ---
     recon_segments: list[ReconSegment] = []
-    for sid, add in added.items():
+    seq = 0
+    for sid, ivs in sorted(intervals.items()):
         seg = net.segments[sid]
+        L = seg.geom.length
         existing_dn = seg.diameter_mm or 0.0
-        required = refdata.diameter_for_flow(seg.flow_tph + add)
-        if required["dn_mm"] > existing_dn:
-            length = seg.geom.length
-            cost = length * refdata.lay_tariff(required["dn_mm"]) \
-                * refdata.tariffs["reconstruction_per_m_multiplier"]
+        cuts = sorted({0.0, L} | {x for a, b, _ in ivs for x in (a, b)})
+        for a, b in zip(cuts, cuts[1:]):
+            if b - a < 0.01:
+                continue
+            mid = (a + b) / 2.0
+            added = sum(f for ia, ib, f in ivs if ia <= mid <= ib)
+            if added <= 0:
+                continue
+            calculated = seg.flow_tph + added
+            required = refdata.diameter_for_flow(calculated)
+            if required["dn_mm"] <= existing_dn:
+                continue  # пропускной способности хватает
+            if required["max_flow_tph"] < calculated:
+                warnings.append(
+                    f"{sid}: расход {calculated:.1f} т/ч превышает максимум "
+                    f"справочника {required['max_flow_tph']} т/ч")
+            piece = subline(seg.geom, a, b)
+            seq += 1
+            length_m = round(piece.length, 1)
             recon_segments.append(ReconSegment(
-                object_id=sid,
+                object_id=f"recon-{seq}",
+                existing_object_id=sid,
                 existing_dn=existing_dn,
                 required_dn=required["dn_mm"],
-                existing_flow_tph=seg.flow_tph,
-                added_flow_tph=add,
-                length_m=round(length, 1),
-                cost_rub=round(cost, 2),
+                existing_flow=round(seg.flow_tph, 3),
+                added_flow=round(added, 3),
+                calculated_flow=round(calculated, 3),
+                length_m=length_m,
+                cost_rub=round(length_m * refdata.recon_tariff(required["dn_mm"]), 2),
+                geom=piece,
             ))
+
+    # --- реконструкция камер (§8.2): требуемый Ду > входного диаметра ---
+    # требуемый Ду примыкающих участков после реконструкции
+    seg_required: dict[str, float] = {}
+    for rs in recon_segments:
+        seg_required[rs.existing_object_id] = max(
+            seg_required.get(rs.existing_object_id, 0.0), rs.required_dn)
+    # врезки по камерам
+    tap_required: dict[str, float] = {}
+    for tap in taps:
+        if tap.kind == "existing_chamber" and tap.chamber_id:
+            tap_required[tap.chamber_id] = max(
+                tap_required.get(tap.chamber_id, 0.0), tap.required_dn)
 
     recon_chambers: list[ReconChamber] = []
-    max_conn = int(refdata.rule("max_chamber_connections"))
-    for tap in taps:
-        if tap.kind != "existing_chamber" or not tap.chamber_id:
+    cseq = 0
+    for cid in sorted(set(tap_required) | {
+            cid for cid in net.chambers
+            if any(s in seg_required for s in net.chamber_adjacent_segment_ids(cid))}):
+        ch = net.chambers.get(cid)
+        if ch is None:
             continue
-        ch = net.chambers[tap.chamber_id]
-        total = ch.occupied_connections + chamber_load.get(tap.chamber_id, 0)
-        if total > max_conn:
-            cid = tap.chamber_id
-            if any(c.object_id == cid for c in recon_chambers):
-                continue
+        adj_ids = net.chamber_adjacent_segment_ids(cid)
+        required = 0.0
+        for sid in adj_ids:
+            s = net.segments[sid]
+            required = max(required, seg_required.get(sid, s.diameter_mm or 0.0))
+        required = max(required, tap_required.get(cid, 0.0))
+        existing = ch.diameter_mm
+        if not existing and adj_ids:
+            existing = max((net.segments[s].diameter_mm or 0.0) for s in adj_ids)
+        existing = existing or 0.0
+        if required > (existing or 0.0):
+            cseq += 1
             recon_chambers.append(ReconChamber(
-                object_id=cid,
-                reason=f"примыканий {total} > лимита {max_conn}",
-                cost_rub=refdata.tariff("chamber_reconstruction"),
+                object_id=f"recon-ch-{cseq}",
+                existing_object_id=cid,
+                existing_dn=existing or 0.0,
+                required_dn=required,
+                cost_rub=refdata.chamber_cost(required),
             ))
 
-    return Reconstruction(added_flows=added, segments=recon_segments, chambers=recon_chambers)
+    return Reconstruction(segments=recon_segments, chambers=recon_chambers)

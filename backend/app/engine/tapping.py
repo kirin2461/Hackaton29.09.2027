@@ -10,6 +10,9 @@
      точки подключения на существующий участок сети (в радиусе
      `tap_search_radius_m`); если участков в радиусе нет — None
      (ОКС уйдёт в unconnected, §2.9).
+
+Стоимость врезки — 5 000 000 ₽ за КАЖДУЮ врезку (§8.2), независимо
+от вида (в существующую камеру или с постройкой новой).
 """
 
 from __future__ import annotations
@@ -30,10 +33,13 @@ class Tap:
     kind: str                # "existing_chamber" | "new_chamber_on_segment"
     point: Point             # точка врезки (метрическая СК)
     flow_tph: float          # расход, который войдёт в сеть в этой точке
+    required_dn: float = 0.0  # Ду новой сети в точке врезки (§10.2)
     chamber_id: Optional[str] = None      # для existing_chamber
     segment_id: Optional[str] = None      # для new_chamber_on_segment
+    along_m: float = 0.0     # отметка точки врезки вдоль участка (для §7)
     chain_start_id: Optional[str] = None  # с чего начинать цепочку к источнику
     tap_cost_rub: float = 0.0
+    node_id: Optional[str] = None         # tie-N (назначается конвейером)
 
 
 def choose_tap_strict(anchor: Point, flow_tph: float, net: ExistingNetwork,
@@ -41,6 +47,8 @@ def choose_tap_strict(anchor: Point, flow_tph: float, net: ExistingNetwork,
     """Точка врезки по §8.2 для здания/кластера от точки anchor."""
     max_dist = float(refdata.rule("chamber_tap_max_dist_m"))
     max_conn = int(refdata.rule("max_chamber_connections"))
+    required_dn = refdata.diameter_for_flow(flow_tph)["dn_mm"]
+    tie_cost = refdata.tie_in_cost()
 
     # --- шаг 1: камера ≤ 10 м со свободными примыканиями ---
     best: tuple[float, str] | None = None
@@ -55,9 +63,10 @@ def choose_tap_strict(anchor: Point, flow_tph: float, net: ExistingNetwork,
             kind="existing_chamber",
             point=ch.geom,
             flow_tph=flow_tph,
+            required_dn=required_dn,
             chamber_id=best[1],
             chain_start_id=best[1],
-            tap_cost_rub=refdata.tariff("tapping_existing_chamber"),
+            tap_cost_rub=tie_cost,
         )
 
     # --- шаг 2: новая камера на ближайшей проекции на участок ---
@@ -71,7 +80,9 @@ def choose_tap_strict(anchor: Point, flow_tph: float, net: ExistingNetwork,
         kind="new_chamber_on_segment",
         point=pt,
         flow_tph=flow_tph,
+        required_dn=required_dn,
         segment_id=sid,
+        along_m=seg.geom.project(anchor),
         chain_start_id=sid,
-        tap_cost_rub=refdata.tariff("chamber_new"),
+        tap_cost_rub=tie_cost,
     )

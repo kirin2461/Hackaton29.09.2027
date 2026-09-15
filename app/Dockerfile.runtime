@@ -1,0 +1,7 @@
+# Рантайм-образ из готового jar (jar собран контейнером maven с host-сетью,
+# см. /tmp/mvn_host_build.sh — обход нестабильной сети buildkit).
+FROM eclipse-temurin:11-jre-jammy
+WORKDIR /app
+COPY app/target/app.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

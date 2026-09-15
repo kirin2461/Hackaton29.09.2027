@@ -1,48 +1,55 @@
 """Оркестрация расчёта: конвейер «файл вошёл — результат вышел».
 
-Спринт 2: обязательные правила §2.3–2.6 ТЗ (граф сети, врезки,
-мульти-ОКС, гидравлика, реконструкция, ограничения).
-Спринт 3: до трёх СОДЕРЖАТЕЛЬНО РАЗНЫХ вариантов (§2.8):
-  V1 — совместное подключение, базовый коридор;
-  V2 — раздельное подключение каждого ОКС;
-  V3 — совместное подключение, альтернативный коридор (усиленный
-       штраф за повороты → другая геометрия трасс).
-Ранжирование: 70% стоимость + 30% протяжённость строительных работ.
+Соответствие техприложению ЛЦТ-2026:
+  §2.1–2.2 — официальная входная схема (loader);
+  §3       — предельные длины непрерывных цепочек одного Ду (hydraulics);
+  §4       — диаметры/ставки по таблице 4.1 (refdata);
+  §5.1     — ограничения: отступы 5/7/9 м по Ду, спецпроходы с Kспец,
+             границы спецучастков, угол пересечения ≥45° (grid/postprocess);
+  §6       — задание на глубину, режим ENGINE_DEPTH_MODE=1 (depth);
+  §7       — реконструкция существующей сети, частичная геометрия (reconstruction);
+  §8.2     — врезки (5 млн ₽) и камеры по шкале (tapping/cost);
+  §8.3     — штраф 100 млн + 500 тыс.×G за неподключённый ОКС (cost);
+  §9       — ранжирование S = 0,7·C/25 млн + 0,3·L/100 (cost);
+  §10      — выходной GeoJSON, строгий контракт (exporter).
 
-Точка врезки — строго по §8.2 (детерминирована, см. tapping.py),
-поэтому вариантность строится на топологии подключения (ствол/раздельно)
-и коридорах маршрутизации, а не на выборе врезок.
+Вариантность (до трёх СОДЕРЖАТЕЛЬНО разных вариантов): топология
+подключения (ствол/раздельно) и коридоры маршрутизации; точка врезки
+детерминирована §8.2 и вариантности не даёт.
 
 Частичный результат (§2.9): ОКС/кластер без точки врезки или маршрута
-не роняет расчёт — попадает в перечень unconnected с причиной.
+не роняет расчёт — попадает в unconnected со штрафом §8.3.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
 from .clustering import cluster_buildings
-from .cost import rank_variants, variant_costs, variant_length_m
-from .depth import assign_depth, chamber_depth_m
+from .cost import rank_variants, variant_costs, variant_lengths_m
+from .depth import apply_depth
 from .exporter import write_result
 from .grid import ConstraintGrid
-from .hydraulics import NewSegment, TechnicalNode, enforce_max_length, size_segment
+from .hydraulics import NewSegment, TechnicalNode, enforce_max_length_chains, size_segment, subline
 from .loader import load_contest_geojson
 from .model import ContestData
 from .network import ExistingNetwork
-from .postprocess import check_self_intersection, simplify_path
+from .postprocess import check_crossing_angles, check_self_intersection, simplify_path
 from .reconstruction import compute_reconstruction
 from .refdata import RefData
 from .tapping import Tap, choose_tap_strict
 
+ENGINE_VERSION = "dit-sprint5.0"
+
 
 @dataclass(frozen=True)
 class Strategy:
-    """Стратегия построения варианта (§2.8)."""
+    """Стратегия построения варианта."""
 
     label: str
     cluster: bool                 # совместное подключение кластеров ОКС
@@ -60,15 +67,16 @@ STRATEGIES = [
 
 def run_pipeline(input_path: Path, result_path: Path,
                  refdata: RefData | None = None) -> dict:
-    """Полный расчёт по конкурсному набору: до 3 вариантов + ранжирование."""
+    """Полный расчёт по конкурсному набору: до 3 вариантов + ранжирование §9."""
     started = time.time()
     ref = refdata or RefData()
 
-    data: ContestData = load_contest_geojson(input_path)
-    net = ExistingNetwork(data.segments, data.chambers)
+    data: ContestData = load_contest_geojson(input_path, refdata=ref)
+    net = ExistingNetwork(data.segments, data.chambers, data.sources)
 
     # Сетка ограничений общая для всех вариантов (временные блокировки
-    # контуров ОКС снимаются в finally — состояние между вариантами чистое).
+    # контуров ОКС и отступов под Ду снимаются — состояние между
+    # вариантами чистое).
     grid = ConstraintGrid(data.bounds, ref)
     grid.apply_constraints(data.constraints)
 
@@ -95,17 +103,17 @@ def run_pipeline(input_path: Path, result_path: Path,
         if len(variants) >= 3:
             break
 
-    rank_variants(variants)
+    rank_variants(variants, ref)
 
     best = variants[0] if variants else _empty_variant()
     summary = {
-        "engine": "dit-sprint4.2",  # + дельта техприложения 5/2/1/4
+        "engine": ENGINE_VERSION,
         "job_elapsed_ms": int((time.time() - started) * 1000),
         "buildings_total": len(data.buildings),
         "buildings_connected": len(data.buildings) - len(best["unconnected_ids"]),
         "unconnected_ids": best["unconnected_ids"],
-        "costs_rub": best["costs"],
-        "length_total_m": best["length_total_m"],
+        "costs_rub": {**best["costs"], "total": best["costs"]["calculated_cost"]},
+        "length_total_m": best["lengths"]["length"],
         "warnings": data.warnings + best["warnings"],
         "variants": [_variant_public(v) for v in variants],
     }
@@ -122,6 +130,7 @@ def _compute_variant(data: ContestData, net: ExistingNetwork,
                      grid: ConstraintGrid, ref: RefData,
                      strategy: Strategy) -> dict:
     max_dirs = int(ref.rule("max_new_directions_per_chamber"))
+    depth_mode = os.getenv("ENGINE_DEPTH_MODE") == "1"
 
     if strategy.cluster:
         groups = cluster_buildings(data.buildings, ref.rule("cluster_radius_m"))
@@ -135,7 +144,7 @@ def _compute_variant(data: ContestData, net: ExistingNetwork,
     unconnected: list[dict] = []
     chamber_load: dict[str, int] = {}
     warnings: list[str] = []
-    seq = {"seg": 0, "chamber": 0, "tech": 0}
+    seq = {"seg": 0, "chamber": 0, "tech": 0, "tie": 0}
 
     for group in groups:
         for pack in _chunk(group, max_dirs):
@@ -143,8 +152,25 @@ def _compute_variant(data: ContestData, net: ExistingNetwork,
                           new_segments, new_chambers, tech_nodes, taps,
                           unconnected, warnings)
 
-    recon = compute_reconstruction(net, taps, ref, chamber_load)
+    # §3: предельные длины непрерывных цепочек одного Ду (без сброса
+    # на камерах/техузлах) — повышение диаметра при превышении
+    enforce_max_length_chains(new_segments, ref, warnings)
+
+    # Раздел 7 + §8.2: реконструкция сети и камер
+    recon = compute_reconstruction(net, taps, ref, warnings)
+
+    # §8.2/§10.4: диаметр и стоимость новых камер — по итоговым примыканиям
+    _finalize_chambers(new_chambers, new_segments, taps, recon, net, ref)
+
+    # Раздел 6 (доп. задача): вертикальный профиль — только в режиме глубины
+    if depth_mode:
+        deep: list[NewSegment] = []
+        for seg in new_segments:
+            deep.extend(apply_depth(seg, ref, seq, tech_nodes, grid.special_zones))
+        new_segments = deep
+
     costs = variant_costs(new_segments, new_chambers, taps, recon, unconnected, ref)
+    lengths = variant_lengths_m(new_segments, recon)
 
     return {
         "label": strategy.label,
@@ -157,13 +183,15 @@ def _compute_variant(data: ContestData, net: ExistingNetwork,
         "unconnected_ids": [u["building_id"] for u in unconnected],
         "warnings": warnings,
         "costs": costs,
-        "length_total_m": variant_length_m(new_segments),
+        "lengths": lengths,
     }
 
 
 def _empty_variant() -> dict:
     return {"unconnected_ids": [], "warnings": [],
-            "costs": {"total": 0.0}, "length_total_m": 0.0}
+            "costs": {"calculated_cost": 0.0},
+            "lengths": {"length": 0.0, "new_network_length": 0.0,
+                        "reconstruction_length": 0.0}}
 
 
 def _variant_signature(variant: dict) -> tuple:
@@ -176,15 +204,15 @@ def _variant_signature(variant: dict) -> tuple:
 
 
 def _variant_public(v: dict) -> dict:
-    """Публичная сводка варианта для metadata (без внутренних объектов)."""
+    """Публичная сводка варианта (для служебного summary движка)."""
     return {
         "rank": v.get("rank"),
         "label": v["label"],
         "score": v.get("score"),
         "is_recommended": v.get("is_recommended", False),
         "status": "partial" if v["unconnected_ids"] else "done",
-        "costs_rub": v["costs"],
-        "length_total_m": v["length_total_m"],
+        "costs_rub": {**v["costs"], "total": v["costs"]["calculated_cost"]},
+        "length_total_m": v["lengths"]["length"],
         "unconnected_ids": v["unconnected_ids"],
         "counts": {
             "new_segments": len(v["new_segments"]),
@@ -203,14 +231,16 @@ def _variant_public(v: dict) -> dict:
 def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                   new_segments, new_chambers, tech_nodes, taps,
                   unconnected, warnings) -> None:
-    """Одна пачка ОКС: врезка, (ствол), ветви, гидравлика."""
+    """Одна пачка ОКС: врезка (§8.2), (ствол), ветви, гидравлика."""
     # §2.9: ОКС с точкой подключения в запретной зоне — сразу в unconnected
     reachable = []
     for b in pack:
-        zone_id = grid.forbidden_reason(b.anchor)
+        dn_b = ref.diameter_for_flow(b.flow_tph)["dn_mm"]
+        zone_id = grid.forbidden_reason(b.anchor, dn_mm=dn_b)
         if zone_id:
             unconnected.append({
                 "building_id": b.object_id, "point": b.anchor,
+                "flow_tph": b.flow_tph,
                 "reason": f"точка подключения в запретной зоне {zone_id}"})
         else:
             reachable.append(b)
@@ -227,111 +257,159 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
     if tap is None:
         for b in pack:
             unconnected.append({"building_id": b.object_id, "point": b.anchor,
+                                "flow_tph": b.flow_tph,
                                 "reason": "нет доступных точек врезки в радиусе поиска"})
         return
+    seq["tie"] += 1
+    tap.node_id = f"tie-{seq['tie']}"
     taps.append(tap)
+
     if tap.kind == "existing_chamber":
         chamber_load[tap.chamber_id] = chamber_load.get(tap.chamber_id, 0) + 1
+        tap_node = tap.chamber_id
     else:
         seq["chamber"] += 1
-        tap_dn = ref.diameter_for_flow(flow_total)["dn_mm"]
+        tap_node = f"ch-{seq['chamber']}"
         new_chambers.append({
-            "object_id": f"new-chamber-{seq['chamber']}",
+            "object_id": tap_node,
             "kind": "tapping_on_segment",
             "point": tap.point,
             "segment_id": tap.segment_id,
-            "cost_rub": ref.tariff("chamber_new"),
-            "depth_m": chamber_depth_m(ref, tap_dn),
+            "tap_required_dn": tap.required_dn,
+            "diameter_mm": 0.0,   # пост-проход _finalize_chambers
+            "cost_rub": 0.0,
         })
 
     # Целевые контуры ОКС блокируем, чтобы трасса их не пересекала
     blocked_cells = []
     segs_before = len(new_segments)
     for b in pack:
-        if b.geom.geom_type == "Polygon":
+        if b.geom.geom_type in ("Polygon", "MultiPolygon"):
             blocked_cells += grid.block_polygon(b.geom)
 
     try:
         turn_penalty = ref.rule("turn_penalty_m") * strategy.turn_penalty_mult
+        pack_dn = ref.diameter_for_flow(flow_total)["dn_mm"]
         if len(pack) == 1:
             b = pack[0]
-            coords = _route(grid, tap.point, b.anchor, turn_penalty)
+            coords = _route(grid, tap.point, b.anchor, turn_penalty, pack_dn)
             if coords is None:
                 unconnected.append({"building_id": b.object_id, "point": b.anchor,
+                                    "flow_tph": b.flow_tph,
                                     "reason": "A* не нашёл маршрут до точки подключения"})
                 return
-            _append_segment(coords, flow_total, "branch", b.object_id,
-                            grid, ref, seq, new_segments, tech_nodes, warnings)
+            _append_segment(coords, flow_total, "branch", tap_node,
+                            _end_node(b), grid, ref, seq,
+                            new_segments, tech_nodes, warnings, b.object_id)
         else:
             branch_pt = grid_snap_free(grid, cluster_center)
-            trunk = _route(grid, tap.point, branch_pt, turn_penalty)
+            trunk = _route(grid, tap.point, branch_pt, turn_penalty, pack_dn)
             if trunk is None:
                 for b in pack:
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
+                                        "flow_tph": b.flow_tph,
                                         "reason": "A* не нашёл маршрут ствола"})
                 return
             seq["chamber"] += 1
-            trunk_dn = ref.diameter_for_flow(flow_total)["dn_mm"]
+            branch_node = f"ch-{seq['chamber']}"
             new_chambers.append({
-                "object_id": f"new-chamber-{seq['chamber']}",
+                "object_id": branch_node,
                 "kind": "branching",
                 "point": branch_pt,
                 "segment_id": None,
-                "cost_rub": ref.tariff("chamber_new"),
-                "depth_m": chamber_depth_m(ref, trunk_dn),
+                "tap_required_dn": 0.0,
+                "diameter_mm": 0.0,
+                "cost_rub": 0.0,
             })
-            trunk_depth = _append_segment(
-                trunk, flow_total, "trunk",
-                "+".join(b.object_id for b in pack),
-                grid, ref, seq, new_segments, tech_nodes, warnings)
+            _append_segment(trunk, flow_total, "trunk", tap_node, branch_node,
+                            grid, ref, seq, new_segments, tech_nodes, warnings,
+                            "+".join(b.object_id for b in pack))
             for b in pack:
-                coords = _route(grid, branch_pt, b.anchor, turn_penalty)
+                dn_b = ref.diameter_for_flow(b.flow_tph)["dn_mm"]
+                coords = _route(grid, branch_pt, b.anchor, turn_penalty, dn_b)
                 if coords is None:
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
+                                        "flow_tph": b.flow_tph,
                                         "reason": "A* не нашёл маршрут ветви"})
                     continue
-                _append_segment(coords, b.flow_tph, "branch", b.object_id,
-                                grid, ref, seq, new_segments, tech_nodes, warnings,
-                                entry_depth_m=trunk_depth)
+                _append_segment(coords, b.flow_tph, "branch", branch_node,
+                                _end_node(b), grid, ref, seq,
+                                new_segments, tech_nodes, warnings, b.object_id)
         _assert_tree(new_segments[segs_before:], warnings)
     finally:
         grid.unblock(blocked_cells)
 
 
-def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
-                    new_segments, tech_nodes, warnings,
-                    entry_depth_m=None) -> float:
-    """Постобработка, спецпроходы, диаметр, предельная длина, глубина.
+def _end_node(b) -> str:
+    """Конечный узел ветви: точка подключения ОКС (§10.1)."""
+    return b.connection_point_id or f"oks-{b.object_id}"
 
-    Возвращает глубину заложения в начале участка — как входную отметку
-    для примыкающих ветвей (задание на глубину, Спринт 4).
-    """
+
+def _append_segment(coords, flow, role, start_node_id, end_node_id,
+                    grid, ref, seq, new_segments, tech_nodes, warnings,
+                    owner_id) -> None:
+    """Постобработка, границы спецучастков (таблица 5.1), диаметр, узлы."""
     pts = simplify_path(coords, tolerance_m=grid.cell * 0.75)
     if not check_self_intersection(pts):
         warnings.append(f"{owner_id}: самопересечение трассы после упрощения — оставлено как есть")
 
-    method, k_special = _dominant_passage(pts, grid)
-    seq["seg"] += 1
-    seg = NewSegment(object_id=f"new-seg-{seq['seg']}", coords=pts,
-                     flow_tph=flow, role=role, method=method, k_special=k_special)
-    size_segment(seg, ref)
-    node_seq = [seq["tech"]]
-    parts, nodes = enforce_max_length(seg, ref, node_seq)
-    seq["tech"] = node_seq[0]
-    tech_nodes.extend(nodes)
-    depth_in = entry_depth_m
-    for part in parts:
-        assign_depth(part, ref, entry_depth_m=depth_in)
-        # непрерывность профиля: конец подучастка — вход для следующего
-        if part.coords3d:
-            depth_in = -part.coords3d[-1][2]
-    new_segments.extend(parts)
-    return parts[0].depth_m if parts else 0.0
+    line = LineString(pts)
+    length = line.length
+    min_special = float(ref.rule("special_passage_min_len_m"))
+    intervals = [(a, b, zid, k) for a, b, zid, k in grid.special_intervals(line)
+                 if b - a >= min_special]
+
+    # точки деления: границы спецучастков
+    cuts = sorted({0.0, length} | {x for a, b, _, _ in intervals for x in (a, b)})
+
+    def _method(a: float, b: float) -> tuple[str, float | None]:
+        mid = (a + b) / 2.0
+        for ia, ib, _zid, k in intervals:
+            if ia <= mid <= ib:
+                return "special", k
+        return "base", None
+
+    parts = [(a, b) for a, b in zip(cuts, cuts[1:]) if b - a > 0.01]
+    cur_start = start_node_id
+    for idx, (a, b) in enumerate(parts):
+        method, k_special = _method(a, b)
+        piece = subline(line, a, b)
+        is_last = idx == len(parts) - 1
+        if is_last:
+            end_node = end_node_id
+        else:
+            seq["tech"] += 1
+            end_node = f"node-{seq['tech']}"
+            tech_nodes.append(TechnicalNode(
+                object_id=end_node,
+                point=line.interpolate(b),
+                reason="граница специального участка (таблица 5.1)"))
+        seq["seg"] += 1
+        seg = NewSegment(
+            object_id=f"seg-{seq['seg']}",
+            coords=[(c[0], c[1]) for c in piece.coords],
+            flow_tph=flow,
+            role=role,
+            method=method,
+            k_special=k_special,
+            start_node_id=cur_start,
+            end_node_id=end_node,
+        )
+        size_segment(seg, ref)
+        new_segments.append(seg)
+        cur_start = end_node
+
+    check_crossing_angles(line, grid.special_zones, warnings, owner_id)
 
 
 def _route(grid: ConstraintGrid, a: Point, b: Point,
-           turn_penalty_m: float | None = None):
-    return grid.astar((a.x, a.y), (b.x, b.y), turn_penalty_m=turn_penalty_m)
+           turn_penalty_m: float | None, dn_mm: float):
+    """A* с временными отступами запретных зон под диаметр трассы (§5.1)."""
+    blocked = grid.clearance_block(dn_mm)
+    try:
+        return grid.astar((a.x, a.y), (b.x, b.y), turn_penalty_m=turn_penalty_m)
+    finally:
+        grid.clearance_unblock(blocked)
 
 
 def grid_snap_free(grid: ConstraintGrid, pt: Point) -> Point:
@@ -343,38 +421,29 @@ def grid_snap_free(grid: ConstraintGrid, pt: Point) -> Point:
     return Point(x, y)
 
 
-def _dominant_passage(pts, grid: ConstraintGrid) -> tuple[str, float | None]:
-    """Метод прокладки и Kспец доминирующей зоны special_passage.
+def _finalize_chambers(new_chambers, new_segments, taps, recon, net, ref) -> None:
+    """§8.2/§10.4: диаметр новой камеры — максимум Ду примыкающих участков
+    в итоговом варианте; стоимость — по шкале §8.2."""
+    # требуемый Ду существующих участков после реконструкции
+    recon_required: dict[str, float] = {}
+    for rs in recon.segments:
+        recon_required[rs.existing_object_id] = max(
+            recon_required.get(rs.existing_object_id, 0.0), rs.required_dn)
 
-    Долю считаем по ДЛИНЕ полилинии (интерполяция с шагом пол-ячейки),
-    а не по вершинам — после упрощения вершин мало и зону можно проскочить.
-    Возвращает (method, Kспец): Kспец берётся из параметров зоны
-    (grid.zone_k), None — если спецпрохода нет.
-    """
-    from shapely.geometry import LineString
-
-    line = LineString(pts)
-    length = line.length
-    if length < 1e-6:
-        return "open_trench", None
-    step = grid.cell / 2.0
-    n = max(2, int(length / step) + 1)
-    special_m: dict[str, float] = {}
-    for k in range(n):
-        p = line.interpolate(k * length / (n - 1))
-        i, j = grid.to_cell(p.x, p.y)
-        tag = str(grid.zone[i, j])
-        if tag.startswith("special_passage:"):
-            zone_id = tag.split(":", 1)[1]
-            special_m[zone_id] = special_m.get(zone_id, 0.0) + step
-    min_len = grid.refdata.rule("special_passage_min_len_m")
-    if not special_m:
-        return "open_trench", None
-    zone_id, best_m = max(special_m.items(), key=lambda kv: kv[1])
-    if best_m < min_len:
-        return "open_trench", None
-    k_special = grid.zone_k.get(zone_id, grid.default_special_mult)
-    return "special_passage", k_special
+    for ch in new_chambers:
+        cid = ch["object_id"]
+        dns = [s.diameter_mm for s in new_segments
+               if s.start_node_id == cid or s.end_node_id == cid]
+        if ch.get("tap_required_dn"):
+            dns.append(ch["tap_required_dn"])
+        if ch.get("segment_id"):
+            sid = ch["segment_id"]
+            seg0 = net.segments.get(sid)
+            if seg0 is not None:
+                dns.append(recon_required.get(sid, seg0.diameter_mm or 0.0))
+        max_dn = max(dns) if dns else ref.diameters[0]["dn_mm"]
+        ch["diameter_mm"] = max_dn
+        ch["cost_rub"] = ref.chamber_cost(max_dn)
 
 
 def _chunk(items: list, n: int) -> list[list]:
@@ -384,8 +453,8 @@ def _chunk(items: list, n: int) -> list[list]:
 def _assert_tree(segments: list[NewSegment], warnings: list) -> None:
     """Проверка «один путь до ОКС»: компоненты новых сегментов — деревья.
 
-    Для компоненты из E рёбер и V вершин (по округлённым концам)
-    должно выполняться E = V - 1, иначе в сети кольцо.
+    Для компоненты из E рёбер и V вершин (по id узлов) должно
+    выполняться E = V - 1, иначе в сети кольцо.
     """
     parent: dict = {}
 
@@ -397,11 +466,9 @@ def _assert_tree(segments: list[NewSegment], warnings: list) -> None:
         return x
 
     for seg in segments:
-        if len(seg.coords) < 2:
+        if not seg.start_node_id or not seg.end_node_id:
             continue
-        a = (round(seg.coords[0][0], 1), round(seg.coords[0][1], 1))
-        b = (round(seg.coords[-1][0], 1), round(seg.coords[-1][1], 1))
-        ra, rb = find(a), find(b)
+        ra, rb = find(seg.start_node_id), find(seg.end_node_id)
         if ra == rb:
             warnings.append(f"{seg.object_id}: обнаружено кольцо в новой сети")
         else:

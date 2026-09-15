@@ -1,6 +1,10 @@
 // Страница ДИТ (/dit): загрузка конкурсного GeoJSON → задание →
-// варианты трассировки на карте + таблицы стоимости/диаметров/реконструкции.
-// Работает ТОЛЬКО с Java API (Спринт 3): POST/GET /api/jobs.
+// варианты трассировки на карте + таблицы стоимости/участков/реконструкции.
+// Работает ТОЛЬКО с Java API: POST/GET /api/jobs.
+// Результат — строго по контракту §10 техприложения: семь типов объектов
+// (heat_network, tie_in, heat_network_reconstruction, heat_chamber,
+// heat_chamber_reconstruction, technical_node, variant_summary),
+// variant_id у каждого объекта, сводка — variant_summary с geometry: null.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './dit.css';
@@ -41,7 +45,7 @@ export default function DitApp() {
   const [job, setJob] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const [selected, setSelected] = useState(1);
+  const [selected, setSelected] = useState(null);
   const timer = useRef(null);
 
   const stopPolling = () => { if (timer.current) { clearInterval(timer.current); timer.current = null; } };
@@ -50,7 +54,7 @@ export default function DitApp() {
   const onFile = useCallback(async (file) => {
     if (!file) return;
     stopPolling();
-    setError(null); setResult(null); setJob(null); setSelected(1);
+    setError(null); setResult(null); setJob(null); setSelected(null);
     try {
       const created = await apiUpload(file);
       setJob(created);
@@ -69,15 +73,26 @@ export default function DitApp() {
     } catch (e) { setError(e.message); }
   }, []);
 
-  const variants = result?.metadata?.variants ?? [];
-  const active = variants.find((v) => v.rank === selected) ?? variants[0];
+  // §10: варианты — сводные записи variant_summary
+  const variants = useMemo(() => {
+    const vs = (result?.features ?? [])
+      .filter((f) => f.properties.object_type === 'variant_summary')
+      .map((f) => f.properties);
+    vs.sort((a, b) => a.rank - b.rank);
+    return vs;
+  }, [result]);
+
+  const active = variants.find((v) => v.variant_id === selected)
+    ?? variants.find((v) => v.rank === 1)
+    ?? variants[0];
 
   return (
     <div className="dit">
       <header className="dit-header">
         <h1>Трассировка теплосетей · ДИТ</h1>
-        <p>Загрузите совмещённый GeoJSON — сервис построит до трёх вариантов
-          подключения перспективных ОКС и отранжирует их (70% стоимость + 30% длина).</p>
+        <p>Загрузите совмещённый GeoJSON (EPSG:4326) — сервис построит до трёх
+          вариантов подключения перспективных ОКС и отранжирует их по §9
+          (S = 0,7·C/25 млн + 0,3·L/100, меньше — лучше).</p>
       </header>
 
       <UploadZone onFile={onFile} busy={!!job && !result && !error} />
@@ -85,18 +100,18 @@ export default function DitApp() {
       {job && <JobCard job={job} />}
       {error && <div className="dit-error">Ошибка: {error}</div>}
 
-      {result && (
+      {result && active && (
         <>
-          <VariantTabs variants={variants} selected={active?.rank} onSelect={setSelected} />
+          <VariantTabs variants={variants} selected={active.variant_id} onSelect={setSelected} />
           <div className="dit-main">
-            <ResultMap result={result} variantRank={active?.rank} />
+            <ResultMap result={result} variantId={active.variant_id} />
             <div className="dit-side">
               <CostTable variant={active} />
-              <SegmentsTable result={result} variantRank={active?.rank} />
-              <ReconTable result={result} variantRank={active?.rank} />
-              <Warnings result={result} />
+              <SegmentsTable result={result} variantId={active.variant_id} />
+              <ReconTable result={result} variantId={active.variant_id} />
+              <Unconnected variant={active} />
               <a className="dit-download" href={`/api/jobs/${job.id}/result`} download>
-                ⬇ Скачать выходной GeoJSON
+                ⬇ Скачать выходной GeoJSON (§10)
               </a>
             </div>
           </div>
@@ -140,12 +155,12 @@ function VariantTabs({ variants, selected, onSelect }) {
   return (
     <div className="dit-tabs">
       {variants.map((v) => (
-        <button key={v.rank}
-          className={`dit-tab ${v.rank === selected ? 'active' : ''}`}
-          onClick={() => onSelect(v.rank)}>
-          <b>#{v.rank}</b> {v.label}
-          <small>{(v.costs_rub.total / 1e6).toFixed(1)} млн ₽ · {v.length_total_m} м
-            {v.is_recommended ? ' · ★ рекомендуемый' : ''}</small>
+        <button key={v.variant_id}
+          className={`dit-tab ${v.variant_id === selected ? 'active' : ''}`}
+          onClick={() => onSelect(v.variant_id)}>
+          <b>Вариант #{v.rank}</b>
+          <small>{(v.calculated_cost / 1e6).toFixed(1)} млн ₽ · {v.length} м · S={v.score}
+            {v.rank === 1 ? ' · ★ рекомендуемый' : ''}</small>
         </button>
       ))}
     </div>
@@ -155,20 +170,20 @@ function VariantTabs({ variants, selected, onSelect }) {
 // ---------- Карта (SVG, проекция lon/lat → экран) ----------
 
 const COLORS = {
-  trunk: '#00b894',
-  branch: '#0984e3',
-  special_passage: '#a55eea',
-  new_chamber: '#00cec9',
-  tapping: '#fdcb6e',
-  technical_node: '#dfe6e9',
-  reconstruction: '#e17055',
-  unconnected: '#d63031',
+  base: '#0984e3',
+  special: '#a55eea',
+  heat_chamber: '#00b894',
+  heat_chamber_reconstruction: '#e17055',
+  tie_in: '#fdcb6e',
+  technical_node: '#b2bec3',
+  heat_network_reconstruction: '#e17055',
 };
 
-function ResultMap({ result, variantRank }) {
+function ResultMap({ result, variantId }) {
   const feats = useMemo(
-    () => result.features.filter((f) => f.properties.variant === variantRank),
-    [result, variantRank]);
+    () => result.features.filter(
+      (f) => f.geometry && f.properties.variant_id === variantId),
+    [result, variantId]);
 
   const proj = useMemo(() => {
     const xs = [], ys = [];
@@ -197,55 +212,60 @@ function ResultMap({ result, variantRank }) {
   }).join(' ');
 
   const dot = (p) => proj(p);
+  const ofType = (t) => feats.filter((f) => f.properties.object_type === t);
 
   return (
     <svg className="dit-map" viewBox="0 0 880 560">
-      {feats.filter((f) => f.properties.object_type === 'reconstruction_segment').map((f, i) => (
-        <path key={`r${i}`} d={path(f.geometry.coordinates)}
-          stroke={COLORS.reconstruction} strokeWidth="4" fill="none"
+      {/* реконструкция существующих участков — пунктир поверх */}
+      {ofType('heat_network_reconstruction').map((f) => (
+        <path key={f.properties.id} d={path(f.geometry.coordinates)}
+          stroke={COLORS.heat_network_reconstruction} strokeWidth="4" fill="none"
           strokeDasharray="8 5" opacity="0.85">
-          <title>Реконструкция {f.properties.object_id}: Ду{f.properties.existing_diameter_mm}
-            → Ду{f.properties.required_diameter_mm}</title>
+          <title>Реконструкция {f.properties.existing_object_id}:
+            Ду{f.properties.existing_diameter} → Ду{f.properties.required_diameter},
+            +{f.properties.added_flow_tph} т/ч, {f.properties.length} м</title>
         </path>
       ))}
-      {feats.filter((f) => f.properties.object_type === 'new_segment').map((f, i) => {
+      {/* новые участки: base — сплошная, special — пунктир */}
+      {ofType('heat_network').map((f) => {
         const p = f.properties;
-        const special = p.method === 'special_passage';
+        const special = p.laying_method === 'special';
         return (
-          <path key={`s${i}`} d={path(f.geometry.coordinates)}
-            stroke={special ? COLORS.special_passage : COLORS[p.role] ?? COLORS.branch}
-            strokeWidth={1.5 + p.diameter_mm / 120} fill="none"
+          <path key={p.id} d={path(f.geometry.coordinates)}
+            stroke={special ? COLORS.special : COLORS.base}
+            strokeWidth={1.5 + p.diameter / 120} fill="none"
             strokeDasharray={special ? '6 4' : undefined} strokeLinecap="round">
-            <title>{p.object_id} · Ду{p.diameter_mm} · {p.flow_tph} т/ч · {p.length_m} м
+            <title>{p.id} · Ду{p.diameter} · {p.flow_tph} т/ч · {p.length} м
               {special ? ' · спецпроход' : ''}</title>
           </path>
         );
       })}
-      {feats.filter((f) => f.geometry.type === 'Point').map((f, i) => {
+      {/* точечные объекты */}
+      {ofType('heat_chamber').map((f) => {
         const [sx, sy] = dot(f.geometry.coordinates);
-        const p = f.properties;
-        if (p.object_type === 'new_chamber') {
-          return <circle key={i} cx={sx} cy={sy} r="7" fill={COLORS.new_chamber} stroke="#013" strokeWidth="1.5">
-            <title>{p.object_id} ({p.kind})</title></circle>;
-        }
-        if (p.object_type === 'tapping') {
-          return <rect key={i} x={sx - 6} y={sy - 6} width="12" height="12"
-            fill={COLORS.tapping} transform={`rotate(45 ${sx} ${sy})`}>
-            <title>Врезка в камеру {p.chamber_id}</title></rect>;
-        }
-        if (p.object_type === 'technical_node') {
-          return <rect key={i} x={sx - 5} y={sy - 5} width="10" height="10"
-            fill="none" stroke={COLORS.technical_node} strokeWidth="2">
-            <title>{p.object_id}: {p.reason}</title></rect>;
-        }
-        if (p.object_type === 'unconnected') {
-          return <g key={i} stroke={COLORS.unconnected} strokeWidth="3">
-            <line x1={sx - 7} y1={sy - 7} x2={sx + 7} y2={sy + 7} />
-            <line x1={sx - 7} y1={sy + 7} x2={sx + 7} y2={sy - 7} />
-            <title>Не подключён: {p.building_id} — {p.reason}</title>
-          </g>;
-        }
-        return null;
+        return <circle key={f.properties.id} cx={sx} cy={sy} r="7"
+          fill={COLORS.heat_chamber} stroke="#013" strokeWidth="1.5">
+          <title>Новая камера {f.properties.id} · Ду{f.properties.diameter}</title></circle>;
+      })}
+      {ofType('heat_chamber_reconstruction').map((f) => {
+        const [sx, sy] = dot(f.geometry.coordinates);
+        return <circle key={f.properties.id} cx={sx} cy={sy} r="7"
+          fill="none" stroke={COLORS.heat_chamber_reconstruction} strokeWidth="2.5">
+          <title>Реконструкция камеры {f.properties.existing_object_id}:
+            Ду{f.properties.existing_diameter} → Ду{f.properties.required_diameter}</title></circle>;
+      })}
+      {ofType('tie_in').map((f) => {
+        const [sx, sy] = dot(f.geometry.coordinates);
+        return <rect key={f.properties.id} x={sx - 6} y={sy - 6} width="12" height="12"
+          fill={COLORS.tie_in} transform={`rotate(45 ${sx} ${sy})`}>
+          <title>Врезка {f.properties.id} в {f.properties.existing_object_id}
+            ({f.properties.existing_object_type})</title></rect>;
+      })}
+      {ofType('technical_node').map((f) => {
+        const [sx, sy] = dot(f.geometry.coordinates);
+        return <rect key={f.properties.id} x={sx - 5} y={sy - 5} width="10" height="10"
+          fill="none" stroke={COLORS.technical_node} strokeWidth="2">
+          <title>Технический узел {f.properties.id}</title></rect>;
       })}
       <Legend />
     </svg>
@@ -254,10 +274,12 @@ function ResultMap({ result, variantRank }) {
 
 function Legend() {
   const items = [
-    ['ствол', COLORS.trunk], ['ветвь', COLORS.branch],
-    ['спецпроход', COLORS.special_passage], ['камера', COLORS.new_chamber],
-    ['врезка', COLORS.tapping], ['реконструкция', COLORS.reconstruction],
-    ['не подключён', COLORS.unconnected],
+    ['новый участок (base)', COLORS.base],
+    ['спецпроход (special)', COLORS.special],
+    ['новая камера', COLORS.heat_chamber],
+    ['врезка', COLORS.tie_in],
+    ['реконструкция', COLORS.heat_network_reconstruction],
+    ['технический узел', COLORS.technical_node],
   ];
   return (
     <g className="dit-legend" transform="translate(12,12)">
@@ -271,55 +293,56 @@ function Legend() {
   );
 }
 
-// ---------- Таблицы ----------
+// ---------- Таблицы (статьи §10.7) ----------
 
 function CostTable({ variant }) {
-  if (!variant) return null;
-  const c = variant.costs_rub;
   const rows = [
-    ['Новые участки', c.new_segments],
-    ['Новые камеры', c.new_chambers],
-    ['Врезки', c.tappings],
-    ['Реконструкция', c.reconstruction],
-    ['Штраф за неподключённые', c.unconnected_penalty],
+    ['Новые участки', variant.construction_cost],
+    ['Новые камеры', variant.chamber_construction_cost],
+    ['Врезки', variant.tie_in_cost],
+    ['Реконструкция участков', variant.reconstruction_cost],
+    ['Реконструкция камер', variant.chamber_reconstruction_cost],
+    ['Штраф за неподключённые ОКС', variant.unconnected_penalty],
   ];
   return (
     <section className="dit-card">
-      <h3>Калькуляция · score {variant.score}</h3>
+      <h3>Калькуляция · S = {variant.score} · место #{variant.rank}</h3>
       <table>
         <tbody>
           {rows.map(([name, val]) => (
             <tr key={name}><td>{name}</td><td className="num">{(val / 1e6).toFixed(2)}</td></tr>
           ))}
-          <tr className="total"><td>ИТОГО</td><td className="num">{(c.total / 1e6).toFixed(2)}</td></tr>
+          <tr className="total"><td>ИТОГО</td>
+            <td className="num">{(variant.calculated_cost / 1e6).toFixed(2)}</td></tr>
         </tbody>
       </table>
-      <p className="dit-note">млн ₽ · протяжённость {variant.length_total_m} м ·
-        статус: {STATUS_RU[variant.status?.toUpperCase()] ?? variant.status}</p>
+      <p className="dit-note">млн ₽ · новая сеть {variant.new_network_length} м
+        + реконструкция {variant.reconstruction_length} м = {variant.length} м</p>
     </section>
   );
 }
 
-function SegmentsTable({ result, variantRank }) {
+function SegmentsTable({ result, variantId }) {
   const segs = result.features.filter(
-    (f) => f.properties.variant === variantRank && f.properties.object_type === 'new_segment');
+    (f) => f.properties.variant_id === variantId
+      && f.properties.object_type === 'heat_network');
   if (!segs.length) return null;
   return (
     <section className="dit-card">
       <h3>Новые участки ({segs.length})</h3>
       <table>
-        <thead><tr><th>ID</th><th>Роль</th><th>Ду, мм</th><th>Расход</th><th>Длина</th><th>Метод</th></tr></thead>
+        <thead><tr><th>ID</th><th>Узлы</th><th>Ду, мм</th><th>Расход</th><th>Длина</th><th>Метод</th></tr></thead>
         <tbody>
           {segs.map((f) => {
             const p = f.properties;
             return (
-              <tr key={p.object_id + p.variant}>
-                <td>{p.object_id}</td>
-                <td>{p.role === 'trunk' ? 'ствол' : 'ветвь'}</td>
-                <td className="num">{p.diameter_mm}</td>
+              <tr key={p.id}>
+                <td>{p.id}</td>
+                <td>{p.start_node_id} → {p.end_node_id}</td>
+                <td className="num">{p.diameter}</td>
                 <td className="num">{p.flow_tph}</td>
-                <td className="num">{p.length_m}</td>
-                <td>{p.method === 'special_passage' ? 'спецпроход' : 'открытый'}</td>
+                <td className="num">{p.length}</td>
+                <td>{p.laying_method === 'special' ? 'спецпроход' : 'обычная'}</td>
               </tr>
             );
           })}
@@ -329,28 +352,28 @@ function SegmentsTable({ result, variantRank }) {
   );
 }
 
-function ReconTable({ result, variantRank }) {
+function ReconTable({ result, variantId }) {
   const items = result.features.filter(
-    (f) => f.properties.variant === variantRank
-      && (f.properties.object_type === 'reconstruction_segment'
-        || f.properties.object_type === 'reconstruction_chamber'));
+    (f) => f.properties.variant_id === variantId
+      && (f.properties.object_type === 'heat_network_reconstruction'
+        || f.properties.object_type === 'heat_chamber_reconstruction'));
   if (!items.length) return null;
   return (
     <section className="dit-card">
       <h3>Реконструкция существующей сети ({items.length})</h3>
       <table>
-        <thead><tr><th>ID</th><th>Тип</th><th>Ду</th><th>+Расход</th><th>Стоимость</th></tr></thead>
+        <thead><tr><th>Объект</th><th>Тип</th><th>Ду</th><th>+Расход</th><th>Стоимость</th></tr></thead>
         <tbody>
           {items.map((f) => {
             const p = f.properties;
+            const isChamber = p.object_type === 'heat_chamber_reconstruction';
             return (
-              <tr key={p.object_id}>
-                <td>{p.object_id}</td>
-                <td>{p.object_type === 'reconstruction_chamber' ? 'камера' : 'участок'}</td>
-                <td className="num">{p.existing_diameter_mm
-                  ? `${p.existing_diameter_mm}→${p.required_diameter_mm}` : '—'}</td>
-                <td className="num">{p.added_flow_tph ?? '—'}</td>
-                <td className="num">{(p.cost_rub / 1e6).toFixed(2)}</td>
+              <tr key={p.id}>
+                <td>{p.existing_object_id}</td>
+                <td>{isChamber ? 'камера' : 'участок'}</td>
+                <td className="num">{p.existing_diameter}→{p.required_diameter}</td>
+                <td className="num">{isChamber ? '—' : p.added_flow_tph}</td>
+                <td className="num">{(p.cost / 1e6).toFixed(2)}</td>
               </tr>
             );
           })}
@@ -360,16 +383,15 @@ function ReconTable({ result, variantRank }) {
   );
 }
 
-function Warnings({ result }) {
-  const warnings = result.metadata?.warnings ?? [];
-  const unconnected = result.metadata?.unconnected_ids ?? [];
-  if (!warnings.length && !unconnected.length) return null;
+function Unconnected({ variant }) {
+  const ids = variant.unconnected_oks_ids ?? [];
+  if (!ids.length) return null;
   return (
     <section className="dit-card warn">
-      <h3>Предупреждения</h3>
+      <h3>Неподключённые ОКС</h3>
       <ul>
-        {unconnected.length > 0 && <li>Без маршрута: {unconnected.join(', ')}</li>}
-        {warnings.map((w, i) => <li key={i}>{w}</li>)}
+        <li>Без маршрута: {ids.join(', ')} — штраф по §8.3 учтён в калькуляции
+          ({(variant.unconnected_penalty / 1e6).toFixed(1)} млн ₽)</li>
       </ul>
     </section>
   );

@@ -1,11 +1,13 @@
-"""Доменная модель конкурсного набора (Спринт 2).
+"""Доменная модель конкурсного набора (официальная схема §2.1 техприложения).
 
-Типы объектов входного GeoJSON (properties.object_type):
-  existing_segment      — участок существующей сети (LineString)
-  chamber               — тепловая камера (Point)
-  prospective_building  — перспективный ОКС (Polygon|Point)
-  connection_point      — точка подключения ОКС (Point)
-  constraint            — пространственное ограничение (Polygon|LineString)
+Типы объектов входного GeoJSON (properties.object_type, таблица 2.1):
+  source                — источник теплоснабжения (Point)
+  heat_network          — существующая тепловая сеть (LineString)
+  heat_chamber          — существующая тепловая камера (Point)
+  oks_future            — перспективный ОКС (Polygon / MultiPolygon)
+  oks_connection_point  — точка подключения перспективного ОКС (Point)
+  oks_existing          — существующий ОКС (Polygon / MultiPolygon)
+  restriction           — пространственное ограничение (по типу, таблица 5.1)
 """
 
 from __future__ import annotations
@@ -13,7 +15,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, Point
+
+
+@dataclass
+class Source:
+    """Источник теплоснабжения (корень цепочки upstream_object_id)."""
+
+    object_id: str
+    geom: Point
 
 
 @dataclass
@@ -24,17 +34,22 @@ class Segment:
     geom: LineString
     diameter_mm: Optional[float] = None
     flow_tph: float = 0.0
-    next_object_id: Optional[str] = None
+    next_object_id: Optional[str] = None  # upstream_object_id — к источнику
 
 
 @dataclass
 class Chamber:
-    """Тепловая камера (существующая)."""
+    """Тепловая камера (существующая).
+
+    diameter_mm — входное значение: максимальный условный диаметр
+    существующих участков, уже примыкающих к камере (§2.2).
+    """
 
     object_id: str
     geom: Point
-    occupied_connections: int = 0
-    next_object_id: Optional[str] = None  # следующий объект к источнику
+    diameter_mm: Optional[float] = None
+    occupied_connections: int = 0   # запасной ввод (не из официальной схемы)
+    next_object_id: Optional[str] = None  # upstream_object_id
 
 
 @dataclass
@@ -42,9 +57,10 @@ class Building:
     """Перспективный ОКС."""
 
     object_id: str
-    geom: object  # Polygon или Point
+    geom: object  # Polygon / MultiPolygon / Point
     flow_tph: float
-    connection_point: Optional[Point] = None  # заполняется при загрузке
+    connection_point: Optional[Point] = None   # заполняется при загрузке
+    connection_point_id: Optional[str] = None  # id точки подключения (§2.2: oks_id)
 
     @property
     def anchor(self) -> Point:
@@ -58,16 +74,18 @@ class Building:
 
 @dataclass
 class ConstraintZone:
-    """Пространственное ограничение.
+    """Пространственное ограничение (restriction, таблица 5.1).
 
-    kind: forbidden | min_distance | special_passage   # по техприложению — два вида правил
-    params: min_distance_m, min_angle_deg, method и др. — из properties.
+    kind: forbidden | special_passage — правило обработки;
+    restriction_type — исходный тип (road, oks_existing, ...);
+    params — атрибуты входа + правило из справочника.
     """
 
     object_id: str
-    geom: object  # Polygon или LineString
+    geom: object  # Polygon / MultiPolygon / LineString / Point
     kind: str
     params: dict = field(default_factory=dict)
+    restriction_type: Optional[str] = None
 
 
 @dataclass
@@ -78,7 +96,8 @@ class ContestData:
     chambers: dict[str, Chamber]
     buildings: dict[str, Building]
     constraints: list[ConstraintZone]
-    crs_from: str          # исходная СК (как правило EPSG:4326)
-    crs_work: str          # рабочая метрическая СК (UTM)
+    crs_from: str          # исходная СК (EPSG:4326 по техприложению)
+    crs_work: str          # рабочая метрическая СК
     bounds: tuple          # (minx, miny, maxx, maxy) в рабочей СК
+    sources: dict[str, Source] = field(default_factory=dict)
     warnings: list = field(default_factory=list)

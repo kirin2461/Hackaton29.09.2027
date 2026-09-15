@@ -25,6 +25,7 @@ class NewSegment:
     flow_tph: float
     role: str = "branch"          # trunk | branch
     method: str = "open_trench"   # open_trench | special_passage
+    k_special: float | None = None  # Kспец зоны спецпрохода (None — тарифный default)
     diameter_mm: float = 0.0
     length_m: float = 0.0
     cost_rub: float = 0.0
@@ -59,7 +60,7 @@ def size_segment(seg: NewSegment, refdata: RefData) -> None:
         )
     tariff = refdata.lay_tariff(seg.diameter_mm)
     if seg.method == "special_passage":
-        tariff *= refdata.tariffs["special_passage_multiplier"]
+        tariff *= seg.k_special or refdata.tariffs["special_passage_multiplier"]
     seg.cost_rub = seg.length_m * tariff
 
 
@@ -88,11 +89,12 @@ def enforce_max_length(seg: NewSegment, refdata: RefData, node_seq: list,
             flow_tph=seg.flow_tph,
             role=seg.role,
             method=seg.method,
+            k_special=seg.k_special,
         )
         sub_seg.diameter_mm = seg.diameter_mm
         tariff = refdata.lay_tariff(seg.diameter_mm)
         if seg.method == "special_passage":
-            tariff *= refdata.tariffs["special_passage_multiplier"]
+            tariff *= seg.k_special or refdata.tariffs["special_passage_multiplier"]
         sub_seg.cost_rub = sub_seg.length_m * tariff
         parts.append(sub_seg)
         if end < seg.length_m - 1e-6:

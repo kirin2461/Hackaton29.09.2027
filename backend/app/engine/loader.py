@@ -1,9 +1,10 @@
 """Потоковый загрузчик конкурсного GeoJSON (Спринт 2).
 
 Файл до 3 ГБ читается ijson'ом — объекты разбираются по одному,
-в память не поднимаются целиком. Координаты проецируются из
-исходной СК (по умолчанию EPSG:4326) в рабочую метрическую (UTM
-по центроиду набора, переопределяется переменной ENGINE_WORK_CRS).
+в память не поднимаются целиком. СК формализованы техприложением:
+вход — EPSG:4326 (валидируется, иное отклоняется), все расчёты —
+в EPSG:32637 (явная проекция pyproj; переопределяется переменными
+ENGINE_SOURCE_CRS / ENGINE_WORK_CRS).
 """
 
 from __future__ import annotations
@@ -49,8 +50,6 @@ _CONSTRAINT_KIND_ALIASES = {
     "ban": "forbidden",
     "min_distance": "min_distance",
     "distance": "min_distance",
-    "crossing": "crossing",
-    "crossing_conditions": "crossing",
     "special_passage": "special_passage",
     "special": "special_passage",
 }
@@ -87,54 +86,51 @@ def _build_geom(geom: dict):
     return None
 
 
-def _choose_work_crs(lons_lats: list[tuple[float, float]]) -> str:
-    """UTM-зона по медианной долготе набора (северное полушарие)."""
-    override = os.getenv("ENGINE_WORK_CRS")
-    if override:
-        return override
-    if lons_lats:
-        lon = sorted(p[0] for p in lons_lats)[len(lons_lats) // 2]
-    else:
-        lon = 37.6  # Москва по умолчанию
-    zone = int((lon + 180.0) / 6.0) + 1
-    zone = max(1, min(60, zone))
-    return f"EPSG:{32600 + zone}"
+import re
+
+_EPSG_RE = re.compile(r"EPSG[^0-9]{0,4}(\d{4,5})", re.IGNORECASE)
+
+
+def _epsg_code(text: str) -> Optional[int]:
+    """Код EPSG из строки вида 'EPSG:4326' или URN 'urn:ogc:def:crs:EPSG::4326'."""
+    m = _EPSG_RE.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def _declared_crs(path: Path) -> Optional[str]:
+    """Верхнеуровневый член 'crs' GeoJSON (если задан в файле)."""
+    with path.open("rb") as fh:
+        for prefix, event, value in ijson.parse(fh):
+            if prefix == "crs.properties.name" and event == "string":
+                return value
+            if prefix == "features" and event == "start_array":
+                return None
+    return None
 
 
 def load_contest_geojson(path: Path, max_scan_points: int = 50) -> ContestData:
-    """Разобрать конкурсный GeoJSON в доменную модель (метрическая СК).
+    """Разобрать конкурсный GeoJSON в доменную модель (EPSG:32637).
 
-    Двухпроходный: первый проход — определение центроида для выбора UTM,
-    второй — потоковый разбор с проекцией координат.
+    Однопроходный потоковый разбор. Перед разбором валидируется СК
+    входа: по техприложению это EPSG:4326; если файл объявляет другую
+    CRS — вход отклоняется.
     """
     path = Path(path)
 
-    # --- проход 1: центроид для выбора UTM-зоны ---
-    probe: list[tuple[float, float]] = []
-    with path.open("rb") as fh:
-        for feat in ijson.items(fh, "features.item"):
-            geom = feat.get("geometry")
-            if not geom:
-                continue
-            c = _to_float_coords(geom.get("coordinates"))
-            try:
-                if geom["type"] == "Point":
-                    probe.append(tuple(c))
-                elif geom["type"] == "LineString":
-                    probe.append(tuple(c[0]))
-                elif geom["type"] == "Polygon":
-                    probe.append(tuple(c[0][0]))
-            except (TypeError, IndexError):
-                continue
-            if len(probe) >= max_scan_points:
-                break
-
     crs_from = os.getenv("ENGINE_SOURCE_CRS", "EPSG:4326")
-    crs_work = _choose_work_crs(probe)
+    declared = _declared_crs(path)
+    if declared:
+        want, got = _epsg_code(crs_from), _epsg_code(declared)
+        if want is None or got != want:
+            raise PipelineInputError(
+                f"входной файл в CRS '{declared}', ожидается {crs_from} "
+                "(техприложение: вход строго в EPSG:4326)"
+            )
+    crs_work = os.getenv("ENGINE_WORK_CRS", "EPSG:32637")
     fwd = Transformer.from_crs(crs_from, crs_work, always_xy=True).transform
     project = lambda g: shp_transform(fwd, g) if g is not None else None  # noqa: E731
 
-    # --- проход 2: полный потоковый разбор ---
+    # --- потоковый разбор ---
     segments: dict[str, Segment] = {}
     chambers: dict[str, Chamber] = {}
     buildings: dict[str, Building] = {}

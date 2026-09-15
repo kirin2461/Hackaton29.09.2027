@@ -98,11 +98,8 @@ def main():
              {"object_type": "constraint", "object_id": "EZ1", "constraint_type": "forbidden"}),
         # спецпроход: ж/д переезд между кольцом и E4
         feat(poly(37.6160, 55.7586, 0.0008, 0.0002),
-             {"object_type": "constraint", "object_id": "EZ2", "constraint_type": "special_passage"}),
-        # пересечение с условиями: набережная вдоль севера кольца
-        feat(line([[37.6130, 55.7650], [37.6190, 55.7650]]),
-             {"object_type": "constraint", "object_id": "EZ3",
-              "constraint_type": "crossing", "min_angle_deg": 45}),
+             {"object_type": "constraint", "object_id": "EZ2", "constraint_type": "special_passage",
+              "k_special": 3.0}),  # Kспец задан зоной — приоритет над тарифным default 2.5
     ]
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

@@ -60,7 +60,7 @@ class Building:
 class ConstraintZone:
     """Пространственное ограничение.
 
-    kind: forbidden | min_distance | crossing | special_passage
+    kind: forbidden | min_distance | special_passage   # по техприложению — два вида правил
     params: min_distance_m, min_angle_deg, method и др. — из properties.
     """
 

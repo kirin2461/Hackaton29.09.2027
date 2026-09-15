@@ -87,10 +87,6 @@ def main():
         feat(point(37.5020, 55.8720),
              {"object_type": "constraint", "object_id": "Z2",
               "constraint_type": "min_distance", "min_distance_m": 20}),
-        # пересечение с условиями (дорога севернее кластера)
-        feat(line([[37.5060, 55.8745], [37.5120, 55.8745]]),
-             {"object_type": "constraint", "object_id": "Z3",
-              "constraint_type": "crossing", "min_angle_deg": 45}),
         # спецпроход на пути к B3
         feat(poly(37.5125, 55.8697, 0.00025, 0.0006),
              {"object_type": "constraint", "object_id": "Z4", "constraint_type": "special_passage"}),

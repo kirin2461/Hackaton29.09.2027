@@ -1,14 +1,15 @@
 """Весовая сетка пространственных ограничений + A* (Спринт 2).
 
 Паттерн растеризации повторяет routing/planner.py (ядро хакатона),
-но вес ячейки задаётся ПРАВИЛАМИ техприложения по типу ограничения:
+но вес ячейки задаётся ПРАВИЛАМИ техприложения. По техприложению
+видов правил ровно два (категории «пересечение с условиями» нет):
 
-  forbidden       — ячейки непроходимы
-  min_distance    — буфер min_distance_m вокруг объекта непроходим
-  crossing        — проходимо с повышенной стоимостью (пересечение
-                    с условиями; угол проверяется на постобработке)
-  special_passage — проходимо с множителем спецпрохода; ячейки
-                    помечаются, чтобы участок выделить отдельно
+  forbidden / min_distance — запрет: ячейки непроходимы, для
+                    min_distance непроходим буфер min_distance_m
+  special_passage — спецпроход: проходимо с множителем Kспец
+                    (берётся из параметров зоны, иначе — тарифный
+                    default); ячейки помечаются, чтобы участок
+                    выделить отдельно и посчитать по Kспец
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ class ConstraintGrid:
         self.mult = np.ones((self.nx, self.ny), dtype=np.float32)
         self.zone = np.full((self.nx, self.ny), "", dtype=object)
 
-        self.crossing_mult = float(refdata.tariffs["special_passage_multiplier"])
+        self.default_special_mult = float(refdata.tariffs["special_passage_multiplier"])
+        self.zone_k: dict[str, float] = {}  # Kспец по ID зоны special_passage
         self.refdata = refdata
 
     # ---------- растеризация ----------
@@ -85,8 +87,8 @@ class ConstraintGrid:
         return None
 
     def apply_constraints(self, zones: list[ConstraintZone]) -> None:
-        """Растеризовать все ограничения по правилам техприложения."""
-        self._zones = zones  # нужны постобработке для проверки углов пересечения
+        """Растеризовать ограничения — по техприложению два вида правил."""
+        self._zones = zones
         for z in zones:
             if z.kind == "forbidden":
                 for c in self._cells_covered_by(z.geom):
@@ -96,16 +98,24 @@ class ConstraintGrid:
                              or z.params.get("distance_m") or 10.0)
                 for c in self._cells_covered_by(z.geom.buffer(dist)):
                     self.blocked[c] = True
-            elif z.kind == "crossing":
-                for c in self._cells_covered_by(z.geom):
-                    if not self.blocked[c]:
-                        self.mult[c] = max(self.mult[c], 3.0)
-                        self.zone[c] = f"crossing:{z.object_id}"
             elif z.kind == "special_passage":
+                k = self._zone_k(z)
+                self.zone_k[z.object_id] = k
                 for c in self._cells_covered_by(z.geom):
                     if not self.blocked[c]:
-                        self.mult[c] = max(self.mult[c], self.crossing_mult)
+                        self.mult[c] = max(self.mult[c], k)
                         self.zone[c] = f"special_passage:{z.object_id}"
+
+    def _zone_k(self, z: ConstraintZone) -> float:
+        """Kспец зоны спецпрохода: из параметров зоны, иначе тарифный default."""
+        for key in ("k_special", "special_passage_multiplier", "multiplier", "k"):
+            v = z.params.get(key)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+        return self.default_special_mult
 
     def block_polygon(self, geom) -> list[tuple[int, int]]:
         """Временная блокировка (например, контур целевого ОКС)."""

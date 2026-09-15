@@ -29,7 +29,7 @@ from .hydraulics import NewSegment, TechnicalNode, enforce_max_length, size_segm
 from .loader import load_contest_geojson
 from .model import ContestData
 from .network import ExistingNetwork
-from .postprocess import check_self_intersection, crossings_with, simplify_path
+from .postprocess import check_self_intersection, simplify_path
 from .reconstruction import compute_reconstruction
 from .refdata import RefData
 from .tapping import Tap, choose_tap_ranked
@@ -81,7 +81,7 @@ def run_pipeline(input_path: Path, result_path: Path,
 
     best = variants[0] if variants else _empty_variant()
     summary = {
-        "engine": "dit-sprint4",
+        "engine": "dit-sprint4.1",  # + дельта техприложения 5/2/1
         "job_elapsed_ms": int((time.time() - started) * 1000),
         "buildings_total": len(data.buildings),
         "buildings_connected": len(data.buildings) - len(best["unconnected_ids"]),
@@ -292,14 +292,10 @@ def _append_segment(coords, flow, role, owner_id, grid, ref, seq,
     if not check_self_intersection(pts):
         warnings.append(f"{owner_id}: самопересечение трассы после упрощения — оставлено как есть")
 
-    bad_crossings = crossings_with(pts, getattr(grid, "_zones", []))
-    if bad_crossings:
-        warnings.append(f"{owner_id}: пересечение ограничений {bad_crossings} под углом ниже нормы")
-
-    method = _dominant_method(pts, grid)
+    method, k_special = _dominant_passage(pts, grid)
     seq["seg"] += 1
     seg = NewSegment(object_id=f"new-seg-{seq['seg']}", coords=pts,
-                     flow_tph=flow, role=role, method=method)
+                     flow_tph=flow, role=role, method=method, k_special=k_special)
     size_segment(seg, ref)
     node_seq = [seq["tech"]]
     parts, nodes = enforce_max_length(seg, ref, node_seq)
@@ -328,30 +324,38 @@ def grid_snap_free(grid: ConstraintGrid, pt: Point) -> Point:
     return Point(x, y)
 
 
-def _dominant_method(pts, grid: ConstraintGrid) -> str:
-    """Спецпроход, если заметная доля трассы лежит в зоне special_passage.
+def _dominant_passage(pts, grid: ConstraintGrid) -> tuple[str, float | None]:
+    """Метод прокладки и Kспец доминирующей зоны special_passage.
 
     Долю считаем по ДЛИНЕ полилинии (интерполяция с шагом пол-ячейки),
     а не по вершинам — после упрощения вершин мало и зону можно проскочить.
+    Возвращает (method, Kспец): Kспец берётся из параметров зоны
+    (grid.zone_k), None — если спецпрохода нет.
     """
     from shapely.geometry import LineString
 
     line = LineString(pts)
     length = line.length
     if length < 1e-6:
-        return "open_trench"
+        return "open_trench", None
     step = grid.cell / 2.0
     n = max(2, int(length / step) + 1)
-    special_m = 0.0
+    special_m: dict[str, float] = {}
     for k in range(n):
         p = line.interpolate(k * length / (n - 1))
         i, j = grid.to_cell(p.x, p.y)
-        if str(grid.zone[i, j]).startswith("special_passage"):
-            special_m += step
+        tag = str(grid.zone[i, j])
+        if tag.startswith("special_passage:"):
+            zone_id = tag.split(":", 1)[1]
+            special_m[zone_id] = special_m.get(zone_id, 0.0) + step
     min_len = grid.refdata.rule("special_passage_min_len_m")
-    if special_m >= min_len:
-        return "special_passage"
-    return "open_trench"
+    if not special_m:
+        return "open_trench", None
+    zone_id, best_m = max(special_m.items(), key=lambda kv: kv[1])
+    if best_m < min_len:
+        return "open_trench", None
+    k_special = grid.zone_k.get(zone_id, grid.default_special_mult)
+    return "special_passage", k_special
 
 
 def _chunk(items: list, n: int) -> list[list]:

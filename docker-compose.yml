@@ -1,5 +1,8 @@
 # Синтаксис версии 2.4: совместим и с docker-compose 1.29.2 (требование ТЗ),
 # и с compose plugin v2 (docker compose).
+#
+# Протокол 16.09.2026 п.1: вычислительное ядро — строго Java 11, внутри
+# приложения (in-process); Python-sidecar исключён из поставки.
 version: "2.4"
 
 services:
@@ -22,22 +25,6 @@ services:
     networks: [heatnet]
     # Порт БД наружу не публикуем
 
-  geo-engine:
-    build: ./backend
-    container_name: heatnet-geo-engine
-    volumes:
-      - exchange:/exchange
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - python -c "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/health')"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    mem_limit: 1536m
-    networks: [heatnet]
-    # Порт НЕ публикуем: движок — внутренняя вычислительная библиотека сервиса
-
   app:
     build:
       context: .
@@ -49,8 +36,9 @@ services:
       DB_NAME: heatnet
       DB_USER: heatnet
       DB_PASSWORD: heatnet
-      ENGINE_URL: http://geo-engine:8000
       EXCHANGE_DIR: /exchange
+      # Движок in-process: куча под расчёт (3 ГБ вход — стриминг, не heap)
+      JAVA_TOOL_OPTIONS: "-Xmx2048m"
     ports:
       - "8080:8080"
     volumes:
@@ -58,9 +46,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      geo-engine:
-        condition: service_healthy
-    mem_limit: 1024m
+    mem_limit: 3072m
     networks: [heatnet]
 
 volumes:

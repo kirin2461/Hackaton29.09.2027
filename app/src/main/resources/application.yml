@@ -22,10 +22,10 @@ spring:
     open-in-view: false
 
 app:
-  # Общий volume для обмена файлами с geo-engine
+  # Общий volume для файлов заданий (вход/результат)
   exchange-dir: ${EXCHANGE_DIR:/exchange}
-  # Внутренний адрес вычислительного движка (не публикуется наружу)
-  engine-url: ${ENGINE_URL:http://localhost:8000}
+  # Движок — in-process (Java 11, протокол 16.09.2026 п.1);
+  # справочники — classpath:/reference.yaml (переопр. ENGINE_REFERENCE_PATH)
 
 springdoc:
   swagger-ui:

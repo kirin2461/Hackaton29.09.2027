@@ -7,7 +7,10 @@
 ## 🏛 Архитектура по ТЗ ДИТ (актуально с 15.09)
 
 Публичная точка входа — **Java 11 / Spring Boot 2.6.3** (`app/`), вычислительное
-ядро — Python-движок (`backend/`, внутренний, снаружи недоступен), БД — **PostgreSQL 16**.
+ядро — **Java-движок in-process** (`app/src/main/java/ru/heatnet/dit/engine/core/`,
+JTS 1.18.2; протокол 16.09.2026 п.1 — никаких сторонних рантаймов в поставке),
+БД — **PostgreSQL 16**. Python-версия движка (`backend/`) остаётся в репозитории
+как тестовый оракул и набор контрактных проверок §10 — в docker-поставку она не входит.
 Документация API — springdoc-openapi-ui 1.7.0 (Swagger UI). Поднимается одной командой:
 
 ```bash
@@ -32,8 +35,7 @@ docker-compose up --build          # совместимо с docker-compose 1.29
 
 | Контейнер | Стек | Роль |
 |---|---|---|
-| `app` | Java 11, Spring Boot 2.6.3, springdoc 1.7.0 | Внешний REST API, стриминг GeoJSON до 3 ГБ, задания в PostgreSQL |
-| `geo-engine` | Python 3.11, FastAPI, GeoPandas/Shapely/SciPy | Внутренний движок трассировки (порт не публикуется) |
+| `app` | Java 11, Spring Boot 2.6.3, springdoc 1.7.0 + движок трассировки (JTS) in-process | REST API, стриминг GeoJSON до 3 ГБ, расчёт вариантов, задания в PostgreSQL |
 | `db` | PostgreSQL 16 | Задания, варианты, артефакты (`db/init.sql`) |
 
 API: `POST /api/jobs` (multipart, стриминг на диск) → `GET /api/jobs/{id}` (статус) →
@@ -93,7 +95,7 @@ API: `POST /api/jobs` (multipart, стриминг на диск) → `GET /api/
 
 | Сторона  | Технологии |
 |----------|-----------|
-| Backend  | Python 3.11+, FastAPI, GeoPandas, Shapely, SciPy (Delaunay), NumPy |
+| Backend  | Java 11, Spring Boot 2.6.3, JTS 1.18.2 (движок in-process); Python 3.11+ (`backend/`) — тестовый оракул и контрактные проверки, не поставляется |
 | Frontend | React 18, Three.js, Vite |
 
 ## Структура репозитория
@@ -148,7 +150,14 @@ API: `POST /api/jobs` (multipart, стриминг на диск) → `GET /api/
 
 ## Запуск
 
-### Backend
+### Поставляемый сервис (Java)
+
+```bash
+docker-compose up --build     # app (Java 11 + движок) + db (PostgreSQL 16)
+# Swagger UI: http://localhost:8080/swagger-ui.html
+```
+
+### Backend (Python-оракул, только для разработки и тестов)
 
 ```bash
 cd backend

@@ -4,7 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import ru.heatnet.dit.engine.EngineClient;
+import ru.heatnet.dit.engine.EngineRunner;
 
 import javax.annotation.PreDestroy;
 import java.nio.file.Files;
@@ -26,12 +26,12 @@ public class JobProcessor {
     private static final Logger log = LoggerFactory.getLogger(JobProcessor.class);
 
     private final JobRepository repo;
-    private final EngineClient engine;
+    private final EngineRunner engine;
     private final Path exchangeDir;
     private final ExecutorService pool = Executors.newFixedThreadPool(2);
 
     public JobProcessor(JobRepository repo,
-                        EngineClient engine,
+                        EngineRunner engine,
                         @Value("${app.exchange-dir}") String exchangeDir) {
         this.repo = repo;
         this.engine = engine;

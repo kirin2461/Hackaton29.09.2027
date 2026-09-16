@@ -4,7 +4,7 @@
 app/target
 app/src/main/resources/static
 exchange
-backend/wheelhouse
-backend/app/data/lidar_demo.laz
-backend/app/data/lidar_demo.npz
+oracle/wheelhouse
+oracle/app/data/lidar_demo.laz
+oracle/app/data/lidar_demo.npz
 !app/target/app.jar

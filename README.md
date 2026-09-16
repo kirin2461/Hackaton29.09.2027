@@ -9,7 +9,7 @@
 Публичная точка входа — **Java 11 / Spring Boot 2.6.3** (`app/`), вычислительное
 ядро — **Java-движок in-process** (`app/src/main/java/ru/heatnet/dit/engine/core/`,
 JTS 1.18.2; протокол 16.09.2026 п.1 — никаких сторонних рантаймов в поставке),
-БД — **PostgreSQL 16**. Python-версия движка (`backend/`) остаётся в репозитории
+БД — **PostgreSQL 16**. Python-версия движка (`oracle/`) остаётся в репозитории
 как тестовый оракул и набор контрактных проверок §10 — в docker-поставку она не входит.
 Документация API — springdoc-openapi-ui 1.7.0 (Swagger UI). Поднимается одной командой:
 
@@ -95,58 +95,46 @@ API: `POST /api/jobs` (multipart, стриминг на диск) → `GET /api/
 
 | Сторона  | Технологии |
 |----------|-----------|
-| Backend  | Java 11, Spring Boot 2.6.3, JTS 1.18.2 (движок in-process); Python 3.11+ (`backend/`) — тестовый оракул и контрактные проверки, не поставляется |
+| Backend  | Java 11, Spring Boot 2.6.3, JTS 1.18.2 (движок in-process); Python 3.11+ (`oracle/`) — тестовый оракул и контрактные проверки, не поставляется |
 | Frontend | React 18, Three.js, Vite |
 
 ## Структура репозитория
 
 ```
-├── backend/            # FastAPI-приложение
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py             # точка входа (День 1)
-│       ├── config.py           # настройки (День 1)
-│       ├── deps.py             # DI-зависимости FastAPI (День 1)
-│       ├── gis/
-│       │   ├── parser.py       # ГИС-парсер на GeoPandas (День 2)
-│       │   └── osm_loader.py   # загрузчик OSM-файлов (День 2)
-│       ├── terrain/
-│       │   └── triangulation.py# триангуляция Делоне (День 3)
-│       ├── api/
-│       │   ├── routes_map.py     # GET /api/map/layers (День 2)
-│       │   ├── routes_terrain.py # GET /api/terrain/mesh (День 3)
-│       │   └── routes_project.py # POST /api/project/connect (День 5)
-│       └── data/               # геоданные (GeoJSON)
-│           ├── buildings.geojson      # здания (OpenStreetMap)
-│           ├── roads.geojson          # дороги (OpenStreetMap)
-│           ├── heat_networks.geojson  # теплосети (OpenStreetMap)
-│           └── fetch_osm.py      # загрузчик слоёв из OSM через Overpass API
-├── frontend/           # React + Three.js
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── index.html
-│   └── src/
-│       ├── main.jsx            # вход React (День 1)
-│       ├── App.jsx             # состояние приложения (Дни 1, 5)
-│       ├── styles.css
-│       ├── api/client.js       # HTTP-клиент к FastAPI (День 1)
-│       ├── scene/
-│       │   ├── MapScene.jsx    # 3D-сцена Three.js (Дни 4-5)
-│       │   ├── terrain.js      # low-poly рельеф из меша (День 4)
-│       │   ├── buildings.js    # extrusion зданий (День 4)
-│       │   └── networks.js     # дороги и теплосети (Дни 4-5)
-│       └── components/
-│           └── Toolbar.jsx     # панель «Точка посадки» (День 5)
-└── docs/               # подробные пояснения по дням и файлам
-    ├── day1-architecture.md
-    ├── day2-gis-parser.md
-    ├── day3-triangulation.md
-    ├── day4-3d-scene.md
-    └── day5-landing-point.md
+├── app/                # ПОСТАВЛЯЕМЫЙ сервис: Java 11 / Spring Boot 2.6.3
+│   ├── pom.xml               # зависимости (JTS 1.18.2, snakeyaml, springdoc)
+│   ├── Dockerfile            # многостадийная сборка (frontend → maven → JRE)
+│   ├── Dockerfile.runtime    # рантайм из готового jar (обход сети buildkit)
+│   └── src/main/
+│       ├── java/ru/heatnet/dit/
+│       │   ├── engine/EngineRunner.java   # запуск движка in-process
+│       │   ├── engine/core/               # ВЫЧИСЛИТЕЛЬНОЕ ЯДРО (Java 11, JTS):
+│       │   │   ├── Pipeline.java          #   конвейер, 3 стратегии, ранжирование §9
+│       │   │   ├── ConstraintGrid.java    #   сетка ограничений 3 м, A*, коридоры
+│       │   │   ├── Loader.java            #   стриминг GeoJSON до 3 ГБ, диагностика п.9
+│       │   │   ├── Hydraulics.java        #   гидравлика, п.7 (один шаг Ду), п.9 (отводы)
+│       │   │   ├── Reconstruction.java    #   реконструкция §8 (п.8: только камеры-врезки)
+│       │   │   ├── Depth.java             #   глубина заложения, пересечения
+│       │   │   ├── Exporter.java          #   GeoJSON-результат, 7 типов §10
+│       │   │   └── Crs.java, RefData.java, …
+│       │   ├── job/                       # задания, статусы, выдача результата
+│       │   └── …                          # REST API (springdoc-openapi-ui)
+│       └── resources/
+│           ├── reference.yaml  # ВСЕ тарифы и правила §2.14 (не в коде)
+│           └── static/         # собранный фронтенд (React/Three.js)
+├── frontend/           # React 18 + Three.js (dist собран заранее)
+├── db/                 # init.sql — PostgreSQL 16
+├── oracle/             # Python-версия движка: ТЕСТОВЫЙ ОРАКУЛ, в поставку НЕ входит
+│   ├── app/engine/           # эталонная реализация (Shapely/pyproj)
+│   └── tests/                # смоук (54), репетиция (24), e2e через Java API,
+│                             # контрольные наборы contest_sample*.geojson
+├── scripts/            # fix_arp.sh — обход ARP-особенности VPS
+├── docs/               # документация, дельта техприложения, демо-сценарий
+├── docker-compose.yml          # каноничный запуск: db + app (мостовая сеть)
+└── docker-compose.hostnet.yml  # резервный вариант (network_mode: host)
 ```
 
-Подробное описание каждого файла — в `docs/` (по одному .md на день,
-внутри — разбор всех файлов, созданных в этот день).
+Плановые заметки по дням спринта — в `docs/day*.md` (история разработки).
 
 ## Запуск
 
@@ -157,10 +145,10 @@ docker-compose up --build     # app (Java 11 + движок) + db (PostgreSQL 16
 # Swagger UI: http://localhost:8080/swagger-ui.html
 ```
 
-### Backend (Python-оракул, только для разработки и тестов)
+### Python-оракул (только для разработки и тестов, НЕ входит в поставку)
 
 ```bash
-cd backend
+cd oracle
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
@@ -188,7 +176,7 @@ npm run dev
 Загрузить слои для любого другого участка (bbox в градусах WGS84):
 
 ```bash
-cd backend
+cd oracle
 python -m app.data.fetch_osm 55.8826 37.4920 55.8943 37.5129
 ```
 
@@ -230,7 +218,7 @@ python -m app.data.fetch_osm 55.8826 37.4920 55.8943 37.5129
     GET  /api/terrain/lidar/status  — статистика облака
     GET  /api/terrain/lidar/cloud.bin — бинарное облако для WebGL
 
-Демо-файл `backend/app/data/lidar_demo.laz` — фрагмент открытого
+Демо-файл `oracle/app/data/lidar_demo.laz` — фрагмент открытого
 датасета Autzen Stadium (USGS 3DEP, public domain), ~1,8 млн точек.
 Свой LAZ (например, облёт площадки дроном) должен быть
 классифицированным: без ground-точек ЦМР построить не из чего.

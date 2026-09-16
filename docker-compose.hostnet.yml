@@ -3,7 +3,7 @@
 # Каноничный файл для проверки ТЗ — docker-compose.yml (мостовая сеть).
 #
 # Здесь все сервисы в network_mode: host. Наружу смотрит ТОЛЬКО app (:8080);
-# geo-engine и PostgreSQL слушают исключительно 127.0.0.1.
+# PostgreSQL слушает исключительно 127.0.0.1 (движок — in-process в app).
 #
 # Запуск: docker compose -f docker-compose.hostnet.yml up -d
 # Совместимо с docker-compose 1.29.2.
@@ -30,23 +30,6 @@ services:
     mem_limit: 512m
     network_mode: host
 
-  geo-engine:
-    build: ./backend
-    container_name: heatnet-geo-engine
-    # uvicorn слушает только loopback — движок недоступен снаружи
-    command: uvicorn app.main:app --host 127.0.0.1 --port 8000
-    volumes:
-      - exchange:/exchange
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    mem_limit: 1536m
-    network_mode: host
-
   app:
     build:
       context: .
@@ -58,17 +41,16 @@ services:
       DB_NAME: heatnet
       DB_USER: heatnet
       DB_PASSWORD: heatnet
-      ENGINE_URL: http://127.0.0.1:8000
       EXCHANGE_DIR: /exchange
+      # Движок in-process: куча под расчёт
+      JAVA_TOOL_OPTIONS: "-Xmx2048m"
       # Приложение слушает 0.0.0.0:8080 (server.port из application.yml)
     depends_on:
       db:
         condition: service_healthy
-      geo-engine:
-        condition: service_healthy
     volumes:
       - exchange:/exchange
-    mem_limit: 1024m
+    mem_limit: 3072m
     network_mode: host
 
 volumes:

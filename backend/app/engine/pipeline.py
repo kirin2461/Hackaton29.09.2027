@@ -35,7 +35,8 @@ from .cost import rank_variants, variant_costs, variant_lengths_m
 from .depth import apply_depth
 from .exporter import write_result
 from .grid import ConstraintGrid
-from .hydraulics import NewSegment, TechnicalNode, enforce_max_length_chains, size_segment, subline
+from .hydraulics import (NewSegment, TechnicalNode, enforce_max_length_chains,
+                         nonstandard_bend, size_segment, subline)
 from .loader import load_contest_geojson
 from .model import ContestData
 from .network import ExistingNetwork
@@ -44,7 +45,7 @@ from .reconstruction import compute_reconstruction
 from .refdata import RefData
 from .tapping import Tap, choose_tap_strict
 
-ENGINE_VERSION = "dit-sprint5.0"
+ENGINE_VERSION = "dit-sprint6.0"
 
 
 @dataclass(frozen=True)
@@ -263,9 +264,15 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
     seq["tie"] += 1
     tap.node_id = f"tie-{seq['tie']}"
     taps.append(tap)
+    # Контрольные точки для отката (маршрут не найден / нерентабельно)
+    taps_before = len(taps) - 1
+    chambers_before = len(new_chambers)
+    tech_before = len(tech_nodes)
+    load_chamber_id = None
 
     if tap.kind == "existing_chamber":
         chamber_load[tap.chamber_id] = chamber_load.get(tap.chamber_id, 0) + 1
+        load_chamber_id = tap.chamber_id
         tap_node = tap.chamber_id
     else:
         seq["chamber"] += 1
@@ -287,6 +294,16 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
         if b.geom.geom_type in ("Polygon", "MultiPolygon"):
             blocked_cells += grid.block_polygon(b.geom)
 
+    def _rollback() -> None:
+        """Откат всего, что пачка успела добавить (отказ от подключения)."""
+        del new_segments[segs_before:]
+        del taps[taps_before:]
+        del new_chambers[chambers_before:]
+        del tech_nodes[tech_before:]
+        if load_chamber_id is not None:
+            chamber_load[load_chamber_id] = max(
+                0, chamber_load.get(load_chamber_id, 1) - 1)
+
     try:
         turn_penalty = ref.rule("turn_penalty_m") * strategy.turn_penalty_mult
         pack_dn = ref.diameter_for_flow(flow_total)["dn_mm"]
@@ -297,6 +314,7 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                 unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                     "flow_tph": b.flow_tph,
                                     "reason": "A* не нашёл маршрут до точки подключения"})
+                _rollback()
                 return
             _append_segment(coords, flow_total, "branch", tap_node,
                             _end_node(b), grid, ref, seq,
@@ -309,6 +327,7 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                     unconnected.append({"building_id": b.object_id, "point": b.anchor,
                                         "flow_tph": b.flow_tph,
                                         "reason": "A* не нашёл маршрут ствола"})
+                _rollback()
                 return
             seq["chamber"] += 1
             branch_node = f"ch-{seq['chamber']}"
@@ -336,8 +355,56 @@ def _process_pack(pack, net, grid, ref, strategy, chamber_load, seq,
                                 _end_node(b), grid, ref, seq,
                                 new_segments, tech_nodes, warnings, b.object_id)
         _assert_tree(new_segments[segs_before:], warnings)
+
+        # Протокол 16.09.2026 п.9: если прямые затраты на подключение пачки
+        # превышают суммарный штраф §8.3 — отказ от подключения (откат).
+        pack_cost = _pack_direct_cost(new_segments[segs_before:],
+                                      new_chambers[chambers_before:],
+                                      taps[taps_before:], net, ref)
+        penalty = sum(ref.unconnected_penalty(b.flow_tph) for b in pack)
+        if pack_cost > penalty:
+            warnings.append(
+                f"пачка {[b.object_id for b in pack]}: подключение "
+                f"{pack_cost / 1e6:.1f} млн ₽ дороже штрафа "
+                f"{penalty / 1e6:.1f} млн ₽ — отказ (протокол п.9)")
+            for b in pack:
+                unconnected.append({
+                    "building_id": b.object_id, "point": b.anchor,
+                    "flow_tph": b.flow_tph,
+                    "reason": "подключение нерентабельно: трасса дороже штрафа §8.3"})
+            _rollback()
     finally:
         grid.unblock(blocked_cells)
+
+
+def _pack_direct_cost(pack_segments, pack_chambers, pack_taps, net, ref) -> float:
+    """Прямые затраты на подключение пачки ОКС (протокол п.9).
+
+    Сравниваются со штрафом §8.3: новые участки + врезки + новые камеры +
+    реконструкция камеры-врезки (п.8). Реконструкция существующих линейных
+    участков — общая инфраструктура варианта, в сравнение не входит.
+    """
+    total = sum(s.cost_rub for s in pack_segments)
+    total += sum(t.tap_cost_rub for t in pack_taps)
+    for ch in pack_chambers:
+        cid = ch["object_id"]
+        dns = [s.diameter_mm for s in pack_segments
+               if s.start_node_id == cid or s.end_node_id == cid]
+        if ch.get("tap_required_dn"):
+            dns.append(ch["tap_required_dn"])
+        if ch.get("segment_id"):
+            seg0 = net.segments.get(ch["segment_id"])
+            if seg0 is not None:
+                dns.append(seg0.diameter_mm or 0.0)
+        max_dn = max(dns) if dns else ref.diameters[0]["dn_mm"]
+        total += ref.chamber_cost(max_dn)
+    for t in pack_taps:
+        if t.kind == "existing_chamber" and t.chamber_id:
+            ch = net.chambers.get(t.chamber_id)
+            existing_dn = (ch.diameter_mm or 0.0) if ch else 0.0
+            if t.required_dn > existing_dn:
+                total += ref.chamber_cost(t.required_dn)
+    return total
 
 
 def _end_node(b) -> str:
@@ -395,6 +462,14 @@ def _append_segment(coords, flow, role, start_node_id, end_node_id,
             start_node_id=cur_start,
             end_node_id=end_node,
         )
+        # Протокол п.9: нештатный угол отвода (не 45°/90°) → ×1,5 к стоимости
+        std_angles = tuple(ref.rules.get("bend_standard_angles_deg", (45.0, 90.0)))
+        bend_tol = float(ref.rules.get("bend_angle_tolerance_deg", 5.0))
+        if nonstandard_bend(seg.coords, standard_deg=std_angles, tol_deg=bend_tol):
+            seg.bend_factor = float(ref.rules.get("bend_nonstandard_cost_factor", 1.5))
+            warnings.append(
+                f"{owner_id}: {seg.object_id} — нештатный угол отвода, "
+                f"×{seg.bend_factor:g} к стоимости (протокол п.9)")
         size_segment(seg, ref)
         new_segments.append(seg)
         cur_start = end_node

@@ -28,6 +28,7 @@ class NewSegment:
     role: str = "branch"          # trunk | branch
     method: str = "base"          # base | special (§10.1 laying_method)
     k_special: float | None = None  # Kспец зоны спецпрохода
+    bend_factor: float = 1.0        # ×1,5 при нештатном угле отвода (протокол п.9)
     diameter_mm: float = 0.0
     length_m: float = 0.0
     cost_rub: float = 0.0
@@ -63,12 +64,50 @@ def subline(line: LineString, start_m: float, end_m: float) -> LineString:
     return LineString([(p.x, p.y) for p in pts])
 
 
+def nonstandard_bend(coords, standard_deg=(45.0, 90.0), tol_deg: float = 5.0) -> bool:
+    """Протокол 16.09.2026 п.9: есть ли на полилинии отвод с нештатным углом.
+
+    Штатные углы отвода — 45° и 90° (±tol_deg); отклонение ≤ tol_deg
+    считается прямолинейным продолжением. Любой другой угол в вершине —
+    нештатный отвод (×1,5 к стоимости участка).
+    """
+    pts = [(float(c[0]), float(c[1])) for c in coords]
+    for i in range(1, len(pts) - 1):
+        ax, ay = pts[i - 1]
+        bx, by = pts[i]
+        cx, cy = pts[i + 1]
+        v1 = (bx - ax, by - ay)
+        v2 = (cx - bx, cy - by)
+        n1 = math.hypot(*v1)
+        n2 = math.hypot(*v2)
+        if n1 < 1e-9 or n2 < 1e-9:
+            continue
+        cos_a = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+        dev = math.degrees(math.acos(cos_a))
+        if dev <= tol_deg:
+            continue  # прямолинейно
+        if any(abs(dev - std) <= tol_deg for std in standard_deg):
+            continue  # штатный отвод 45°/90°
+        return True
+    return False
+
+
+def reprice(seg: NewSegment, refdata: RefData) -> None:
+    """Пересчитать ставку и стоимость участка (после смены Ду/коэффициентов)."""
+    tariff = refdata.lay_tariff(seg.diameter_mm)
+    if seg.method == "special":
+        tariff *= seg.k_special or 1.5
+    tariff *= seg.bend_factor
+    seg._tariff_rub_m = tariff
+    seg.cost_rub = seg.length_m * tariff
+
+
 def size_segment(seg: NewSegment, refdata: RefData) -> None:
     """Подобрать диаметр (расход + предельная длина) и стоимость участка.
 
     Если длина участка превышает предельную для подобранного Ду — диаметр
-    повышается, пока длина не впишется (раздел 3: отсчёт сбрасывает только
-    смена диаметра; техузлы предельной длины не ставятся).
+    повышается на ОДИН номенклатурный шаг (раздел 3 + протокол п.7);
+    если длина всё ещё не вписывается — предупреждение.
     """
     d = refdata.diameter_for_flow(seg.flow_tph)
     if d["max_flow_tph"] < seg.flow_tph:
@@ -76,14 +115,18 @@ def size_segment(seg: NewSegment, refdata: RefData) -> None:
             f"расход {seg.flow_tph} т/ч превышает справочный максимум {d['max_flow_tph']} т/ч"
         )
     dn = d["dn_mm"]
-    while seg.length_m > refdata.max_len_for(dn) and dn < refdata.diameters[-1]["dn_mm"]:
+    # Протокол 16.09.2026 п.7: повышение Ду по предельной длине — не более
+    # ОДНОГО номенклатурного шага (большее в датасете не встречается)
+    if seg.length_m > refdata.max_len_for(dn) and dn < refdata.diameters[-1]["dn_mm"]:
         dn = refdata.next_diameter(dn)["dn_mm"]
+    if seg.length_m > refdata.max_len_for(dn):
+        seg.warnings.append(
+            f"длина {seg.length_m:.0f} м превышает предельную "
+            f"{refdata.max_len_for(dn):.0f} м для Ду{int(dn)} — допускается "
+            "один шаг повышения (протокол п.7)"
+        )
     seg.diameter_mm = dn
-    tariff = refdata.lay_tariff(dn)
-    if seg.method == "special":
-        tariff *= seg.k_special or 1.5
-    seg._tariff_rub_m = tariff
-    seg.cost_rub = seg.length_m * tariff
+    reprice(seg, refdata)
 
 
 def enforce_max_length_chains(segments: list[NewSegment], refdata: RefData,
@@ -93,10 +136,11 @@ def enforce_max_length_chains(segments: list[NewSegment], refdata: RefData,
     Участки одного Ду, стыкующиеся в общих узлах (камера/техузел отсчёт
     НЕ сбрасывают), объединяются в цепочки через узлы степени 2. Если
     суммарная длина цепочки превышает предельную для её Ду — вся цепочка
-    повышается на следующий диаметр (стоимость пересчитывается по ставке
-    нового Ду; Kспец участка сохраняется).
+    повышается на следующий диаметр, не более одного шага (протокол п.7);
+    стоимость пересчитывается по ставке нового Ду (Kспец и коэффициент
+    отвода участка сохраняются).
     """
-    for _ in range(6):  # повышение Ду может слить цепочки — итерации до стабилизации
+    for _pass in range(1):  # протокол п.7: не более одного шага повышения Ду
         # узлы -> инцидентные участки (по id концов)
         incidence: dict[str, list[int]] = {}
         for i, s in enumerate(segments):
@@ -142,11 +186,12 @@ def enforce_max_length_chains(segments: list[NewSegment], refdata: RefData,
                 for i in idxs:
                     s = segments[i]
                     s.diameter_mm = new_dn
-                    tariff = refdata.lay_tariff(new_dn)
-                    if s.method == "special":
-                        tariff *= s.k_special or 1.5
-                    s._tariff_rub_m = tariff
-                    s.cost_rub = s.length_m * tariff
+                    reprice(s, refdata)
+                if total > refdata.max_len_for(new_dn) + 1e-6:
+                    warnings.append(
+                        f"цепочка Ду{int(new_dn)} длиной {total:.0f} м всё ещё "
+                        f"> предельной {int(refdata.max_len_for(new_dn))} м — "
+                        "допускается один шаг повышения (протокол п.7)")
                 bumped = True
         if not bumped:
             return

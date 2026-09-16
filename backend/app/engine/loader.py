@@ -12,6 +12,7 @@ restriction); сохранены синонимы ранних внутренн�
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -114,6 +115,24 @@ def _build_geom(geom: dict):
     return None
 
 
+def _geometry_problem(geom) -> Optional[str]:
+    """Диагностика невалидной геометрии (протокол 16.09.2026 п.9).
+
+    None — геометрия корректна; иначе — текст причины.
+    """
+    if geom is None:
+        return "отсутствует или неподдерживаемый тип геометрии"
+    if geom.is_empty:
+        return "пустая геометрия"
+    if not all(math.isfinite(v) for v in geom.bounds):
+        return "неконечные координаты"
+    if isinstance(geom, (Polygon, MultiPolygon)) and not geom.is_valid:
+        return "невалидный полигон (самопересечение, OGC)"
+    if isinstance(geom, LineString) and geom.length <= 0:
+        return "нулевая длина линии"
+    return None
+
+
 def _epsg_code(text: str) -> Optional[int]:
     """Код EPSG из строки вида 'EPSG:4326' или URN 'urn:ogc:def:crs:EPSG::4326'."""
     m = _EPSG_RE.search(text or "")
@@ -180,6 +199,7 @@ def load_contest_geojson(path: Path, refdata=None, max_scan_points: int = 50) ->
     conn_owner: dict[str, str] = {}
     constraints: list[ConstraintZone] = []
     warnings: list[str] = []
+    invalid_geom: list[str] = []   # п.9: диагностика невалидной геометрии
     bounds = [float("inf"), float("inf"), float("-inf"), float("-inf")]
 
     def _extend_bounds(g) -> None:
@@ -196,12 +216,16 @@ def load_contest_geojson(path: Path, refdata=None, max_scan_points: int = 50) ->
             props = feat.get("properties") or {}
             raw_type = str(_pick(props, "object_type", "type", "layer") or "").strip()
             kind = _OBJECT_TYPE_ALIASES.get(raw_type)
-            geom = project(_build_geom(feat.get("geometry")))
-            if geom is None or kind is None:
-                continue
-            _extend_bounds(geom)
+            if kind is None:
+                continue  # неизвестный тип объекта — пропуск без диагностики
             oid = str(_pick(props, "object_id", "id", "uid")
                       or f"{kind}:{len(segments) + len(chambers) + len(buildings)}")
+            geom = project(_build_geom(feat.get("geometry")))
+            bad = _geometry_problem(geom)
+            if bad:
+                invalid_geom.append(f"{oid}: {bad}")
+                continue
+            _extend_bounds(geom)
 
             if kind == "source":
                 sources[oid] = Source(
@@ -250,6 +274,13 @@ def load_contest_geojson(path: Path, refdata=None, max_scan_points: int = 50) ->
                 zone = _resolve_constraint(oid, props, geom, refdata, warnings)
                 if zone is not None:
                     constraints.append(zone)
+
+    # Протокол 16.09.2026 п.9: невалидная геометрия — диагностическая ошибка
+    if invalid_geom:
+        shown = "; ".join(invalid_geom[:20])
+        more = f"; и ещё {len(invalid_geom) - 20}" if len(invalid_geom) > 20 else ""
+        raise PipelineInputError(
+            f"невалидная геометрия ({len(invalid_geom)} объектов): {shown}{more}")
 
     # Привязка точек подключения к ОКС (§2.2: oks_id)
     for cp_id, pt in conn_points.items():

@@ -6,7 +6,8 @@
               штраф 100 млн + 500 тыс. × 10 = 105 млн ₽;
   §7        — E4 (200 т/ч) врезан в середину R1: ЧАСТИЧНАЯ реконструкция
               R1 (Ду300 → Ду400), R2 НЕ реконструируется (240 ≤ 274,9);
-  §8.2      — реконструкция камеры RC1 (Ду300 → Ду400, 5 млн ₽);
+  §8.2      — камера RC1 НЕ реконструируется (транзитная; протокол п.8 —
+              реконструкция только для камер-точек врезки);
   §10       — строгий контракт выходного GeoJSON (семь типов).
 """
 import json
@@ -72,10 +73,8 @@ checks.append(("§7: ставка по требуемому Ду (без Kспе
                all(abs(r["cost"] - r["length"] * 271317) < 1.0
                    for r in recon if r["existing_object_id"] == "R1")))
 recon_ch = by_type.get("heat_chamber_reconstruction", [])
-checks.append(("§8.2: реконструкция камеры RC1 (Ду300 → Ду400, 5 млн ₽)",
-               any(c["existing_object_id"] == "RC1"
-                   and c["required_diameter"] == 400
-                   and c["cost"] == 5000000 for c in recon_ch)))
+checks.append(("§8.2: камера RC1 НЕ реконструируется (транзитная, протокол п.8)",
+               not any(c["existing_object_id"] == "RC1" for c in recon_ch)))
 ties = by_type.get("tie_in", [])
 checks.append(("§8.2: каждая врезка 5 млн ₽",
                bool(ties) and all(t["cost"] == 5000000 for t in ties)))

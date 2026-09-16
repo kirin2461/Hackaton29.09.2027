@@ -189,10 +189,8 @@ def main() -> int:
                    any(c["existing_object_id"] == "C1"
                        and c["required_diameter"] == 250
                        and c["cost"] == 5000000 for c in recon_ch)))
-    checks.append(("§8.2: реконструкция камеры C2 (Ду150 → Ду200, 3 млн ₽)",
-                   any(c["existing_object_id"] == "C2"
-                       and c["required_diameter"] == 200
-                       and c["cost"] == 3000000 for c in recon_ch)))
+    checks.append(("§8.2: камера C2 НЕ реконструируется (транзитная, протокол п.8)",
+                   not any(c["existing_object_id"] == "C2" for c in recon_ch)))
     checks.append(("§8.2: камера C0 НЕ реконструируется (Ду500 достаточно)",
                    not any(c["existing_object_id"] == "C0" for c in recon_ch)))
     chambers = by_type.get("heat_chamber", [])
@@ -298,9 +296,69 @@ def main() -> int:
     _w: list = []
     enforce_max_length_chains([_a, _b], _ref, _w)
     # 400+400=800 м одной цепочкой (узел n2 степени 2, отсчёт НЕ сбрасывается):
-    # Ду поднимается, пока 800 не впишется (Ду125: 554; Ду150: 696; Ду200: 1042)
-    checks.append(("§3: цепочка 800 м одного Ду повышается до Ду200 (без сброса на узле)",
-                   _a.diameter_mm == 200 and _b.diameter_mm == 200 and bool(_w)))
+    # протокол п.7 — повышение максимум на ОДИН номенклатурный шаг:
+    # Ду100 → Ду125 (предельная 554 м); 800 м всё равно > 554 → предупреждение
+    checks.append(("§3: цепочка 800 м повышается на ОДИН шаг до Ду125 (протокол п.7)",
+                   _a.diameter_mm == 125 and _b.diameter_mm == 125 and bool(_w)))
+    checks.append(("§3: предупреждение, что 800 м > предельной и для Ду125",
+                   any("предельн" in w for w in _w)))
+
+    # --- протокол п.9: нештатный угол отвода → ×1,5 (юнит) ---
+    from app.engine.hydraulics import nonstandard_bend as _nb, reprice as _rp
+    checks.append(("п.9: отвод 90° — штатный",
+                   not _nb([(0, 0), (100, 0), (100, 100)])))
+    checks.append(("п.9: отвод 45° — штатный",
+                   not _nb([(0, 0), (100, 0), (200, 100)])))
+    checks.append(("п.9: отвод 135° — нештатный",
+                   _nb([(0, 0), (100, 0), (50, 50)])))
+    checks.append(("п.9: отвод 30° — нештатный",
+                   _nb([(0, 0), (100, 0), (200, 57.735)])))
+    _c = _NS(object_id="c", coords=[(0, 0), (100, 0)], flow_tph=10)
+    _ss(_c, _ref)
+    _base_cost = _c.cost_rub
+    _c.bend_factor = 1.5
+    _rp(_c, _ref)
+    checks.append(("п.9: ×1,5 к стоимости участка с нештатным углом",
+                   abs(_c.cost_rub - _base_cost * 1.5) < 1.0))
+
+    # --- протокол п.9: отказ при дороговизне (юнит-калькуляция) ---
+    from types import SimpleNamespace as _SNS
+    from app.engine.pipeline import _pack_direct_cost
+    _s1 = _NS(object_id="z", coords=[(0, 0), (5000, 0)], flow_tph=10,
+              start_node_id="t1", end_node_id="o1")
+    _ss(_s1, _ref)  # 5000 м — один шаг Ду100→Ду125, ~5 км × 97275 ₽/м
+    _tap = _SNS(kind="new_chamber_on_segment", tap_cost_rub=5_000_000,
+                chamber_id=None, segment_id=None, required_dn=125)
+    _cost = _pack_direct_cost([_s1], [], [_tap], None, _ref)
+    checks.append(("п.9: трасса 5 км дороже штрафа §8.3 → отказ от подключения",
+                   _cost > _ref.unconnected_penalty(10)))
+
+    # --- протокол п.9: невалидная геометрия → диагностическая ошибка (юнит) ---
+    from app.engine.loader import load_contest_geojson, PipelineInputError
+    _bad = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"object_type": "heat_chamber",
+                                           "object_id": "C", "diameter": 500},
+         "geometry": {"type": "Point", "coordinates": [37.6, 55.7]}},
+        {"type": "Feature", "properties": {"object_type": "heat_network",
+                                           "object_id": "S", "diameter": 500,
+                                           "flow_tph": 100},
+         "geometry": {"type": "LineString",
+                      "coordinates": [[37.6, 55.7], [37.601, 55.7]]}},
+        {"type": "Feature", "properties": {"object_type": "oks_existing",
+                                           "object_id": "BAD"},
+         "geometry": {"type": "Polygon", "coordinates": [[
+             [37.6, 55.7], [37.61, 55.7], [37.6, 55.71],
+             [37.61, 55.71], [37.6, 55.7]]]}},  # «бантик» — самопересечение
+    ]}
+    _bad_path = Path(tempfile.mkdtemp()) / "bad.geojson"
+    _bad_path.write_text(json.dumps(_bad), encoding="utf-8")
+    try:
+        load_contest_geojson(_bad_path, _ref)
+        _bad_err = None
+    except PipelineInputError as exc:
+        _bad_err = str(exc)
+    checks.append(("п.9: невалидная геометрия → PipelineInputError с диагностикой",
+                   _bad_err is not None and "BAD" in _bad_err))
 
     print("=== Проверки ===")
     ok = True

@@ -206,11 +206,11 @@ def main() -> int:
                    any(s["laying_method"] == "special"
                        for s in by_type.get("heat_network", []))))
 
-    # --- §9: score = 0,7·C/25 млн + 0,3·L/100 ---
+    # --- §9: score = 0,3·C/25 млн + 0,7·L/100 (по протоколу 16.09) ---
     summaries = by_type.get("variant_summary", [])
     checks.append(("§9: score соответствует формуле",
-                   all(abs(s["score"] - (0.7 * s["calculated_cost"] / 25e6
-                                         + 0.3 * s["length"] / 100)) < 0.01
+                   all(abs(s["score"] - (0.3 * s["calculated_cost"] / 25e6
+                                         + 0.7 * s["length"] / 100)) < 0.01
                        for s in summaries)))
     checks.append(("§9: rank 1 = минимальный score",
                    min(summaries, key=lambda s: s["score"])["rank"] == 1))

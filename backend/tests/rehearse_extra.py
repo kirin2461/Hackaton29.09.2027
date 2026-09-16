@@ -84,8 +84,8 @@ checks.append(("§5.1: спецпроход по дороге K=1,60 (трасс
                    for s in by_type.get("heat_network", []))))
 checks.append(("вариантов >= 2", len(summary["variants"]) >= 2))
 checks.append(("§9: score соответствует формуле",
-               all(abs(s["score"] - (0.7 * s["calculated_cost"] / 25e6
-                                     + 0.3 * s["length"] / 100)) < 0.01
+               all(abs(s["score"] - (0.3 * s["calculated_cost"] / 25e6
+                                     + 0.7 * s["length"] / 100)) < 0.01
                    for s in summaries)))
 checks.extend(contract_checks(data))
 

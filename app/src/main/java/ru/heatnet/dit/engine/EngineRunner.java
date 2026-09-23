@@ -40,6 +40,12 @@ public class EngineRunner {
             log.info("job {}: расчёт завершён за {} мс, подключено {}/{} ОКС",
                     jobId, summary.get("job_elapsed_ms"),
                     summary.get("buildings_connected"), summary.get("buildings_total"));
+            Object w = summary.get("warnings");
+            if (w instanceof java.util.List && !((java.util.List<?>) w).isEmpty()) {
+                for (Object line : (java.util.List<?>) w) {
+                    log.warn("job {}: {}", jobId, line);
+                }
+            }
         } catch (PipelineInputException e) {
             throw new IllegalStateException("невалидный входной набор: " + e.getMessage(), e);
         } finally {

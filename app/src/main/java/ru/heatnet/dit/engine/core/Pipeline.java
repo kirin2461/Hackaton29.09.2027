@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -215,7 +216,11 @@ public final class Pipeline {
         summary.put("costs_rub", costsPub);
         summary.put("length_total_m", best.lengths.getOrDefault("new_network_length", 0.0));
         List<String> allWarnings = new ArrayList<>(data.warnings);
-        allWarnings.addAll(best.warnings);
+        for (Variant var : variants) {
+            for (String w : var.warnings) {
+                allWarnings.add("[" + var.label + "] " + w);
+            }
+        }
         summary.put("warnings", allWarnings);
         List<Map<String, Object>> variantsPub = new ArrayList<>();
         for (Variant v : variants) {
@@ -258,6 +263,9 @@ public final class Pipeline {
             }
         }
 
+        // Совпадающие камеры врезки на одном участке — слияние (§2.1: ≤4 примыканий)
+        dedupTappingChambers(v, ref);
+
         // §2.3: ДУ по расходу и предельной длине каждого пути + монотонность
         Hydraulics.enforceDiameterRules(v.newSegments, ref, v.warnings);
 
@@ -273,9 +281,110 @@ public final class Pipeline {
             v.newSegments = deep;
         }
 
+        // Контроль §3.1 по ИТОГОВЫМ геометрии и ДУ (после возможного повышения
+        // ДУ гидравликой): нарушения фиксируются предупреждениями
+        validateFinalClearances(v, data, grid);
+
         v.costs = Costs.variantCosts(v, net, ref);
         v.lengths = Costs.variantLengthsM(v);
         return v;
+    }
+
+    /**
+     * Слияние новых камер врезки, поставленных в одну точку одного и того же
+     * существующего участка (характерно для стратегии «каждая точка отдельно»).
+     * Камеры объединяются, пока суммарное число примыканий (2 сквозных по
+     * существующему участку + новые участки) не превышает max_chamber_connections.
+     */
+    private static void dedupTappingChambers(Variant v, RefData ref) {
+        int maxConn = (int) ref.rule("max_chamber_connections");
+        if (maxConn <= 0) {
+            maxConn = 4;
+        }
+        Map<String, Integer> deg = new HashMap<>();
+        for (NewSegment s : v.newSegments) {
+            if (s.startNodeId != null) {
+                deg.merge(s.startNodeId, 1, Integer::sum);
+            }
+            if (s.endNodeId != null) {
+                deg.merge(s.endNodeId, 1, Integer::sum);
+            }
+        }
+        Map<String, List<NewChamber>> bySpot = new LinkedHashMap<>();
+        for (NewChamber ch : v.newChambers) {
+            if (!"tapping_on_segment".equals(ch.kind) || ch.segmentId == null) {
+                continue;
+            }
+            String spot = ch.segmentId + "@"
+                    + Math.rint(ch.point.getX() * 2) / 2 + ":"
+                    + Math.rint(ch.point.getY() * 2) / 2;
+            bySpot.computeIfAbsent(spot, k -> new ArrayList<>()).add(ch);
+        }
+        Set<String> removed = new LinkedHashSet<>();
+        Map<String, String> rewire = new HashMap<>();
+        for (List<NewChamber> group : bySpot.values()) {
+            if (group.size() < 2) {
+                continue;
+            }
+            NewChamber keeper = group.get(0);
+            int merged = deg.getOrDefault(keeper.objectId, 0);
+            for (int i = 1; i < group.size(); i++) {
+                NewChamber other = group.get(i);
+                int d = deg.getOrDefault(other.objectId, 0);
+                // сквозная камера на существующем участке: 2 примыкания сети
+                if (2 + merged + d > maxConn) {
+                    keeper = other;      // лимит — начинаем следующую камеру
+                    merged = d;
+                    continue;
+                }
+                rewire.put(other.objectId, keeper.objectId);
+                removed.add(other.objectId);
+                merged += d;
+            }
+        }
+        if (removed.isEmpty()) {
+            return;
+        }
+        for (NewSegment s : v.newSegments) {
+            if (s.startNodeId != null && rewire.containsKey(s.startNodeId)) {
+                s.startNodeId = rewire.get(s.startNodeId);
+            }
+            if (s.endNodeId != null && rewire.containsKey(s.endNodeId)) {
+                s.endNodeId = rewire.get(s.endNodeId);
+            }
+        }
+        v.newChambers.removeIf(ch -> removed.contains(ch.objectId));
+        v.warnings.add("слияние совпадающих камер врезки: удалено " + removed.size()
+                + " дублей (" + removed + " → " + rewire.values() + ")");
+    }
+
+    /**
+     * Контроль отступов по итоговым объектам (§3.1): точная геометрия,
+     * итоговый ДУ. Свой полигон ОКС терминального участка пропускается (§2.2).
+     */
+    private static void validateFinalClearances(Variant v, Model.ContestData data,
+                                                ConstraintGrid grid) {
+        for (NewSegment s : v.newSegments) {
+            Set<String> skip = new LinkedHashSet<>();
+            if (s.endNodeId != null) {
+                Model.ConnectionTarget t = data.targets.get(s.endNodeId);
+                if (t != null && t.oksZoneId != null) {
+                    skip.add(t.oksZoneId);
+                }
+            }
+            if (s.startNodeId != null) {
+                Model.ConnectionTarget t = data.targets.get(s.startNodeId);
+                if (t != null && t.oksZoneId != null) {
+                    skip.add(t.oksZoneId);
+                }
+            }
+            LineString line = GF.createLineString(s.coords.toArray(new Coordinate[0]));
+            List<String> viol = grid.clearanceViolations(line, s.diameterMm, skip);
+            if (!viol.isEmpty()) {
+                v.warnings.add(s.objectId + ": ИТОГОВЫЙ контроль §3.1 — заход в отступ зон "
+                        + viol + " (ДУ" + (int) s.diameterMm + ")");
+            }
+        }
     }
 
     private static Variant emptyVariant(RefData ref) {
@@ -372,13 +481,22 @@ public final class Pipeline {
         cy /= pack.size();
         Point clusterCenter = GF.createPoint(new Coordinate(cx, cy));
 
-        Tapping.Tap tap = Tapping.chooseTapStrict(clusterCenter, flowTotal, net, ref, chamberLoad);
+        Tapping.Tap tap = Tapping.chooseTapStrict(clusterCenter, flowTotal, net, ref, chamberLoad, grid);
         if (tap == null) {
             for (Model.ConnectionTarget t : pack) {
                 v.unconnected.add(new Unconnected(t.objectId, t.anchor(), t.flowTph,
                         "нет доступных точек присоединения в радиусе поиска"));
             }
             return;
+        }
+        if ("new_chamber_on_segment".equals(tap.kind)) {
+            String tapHit = grid.forbiddenReason(tap.point,
+                    RefData.num(ref.diameterForFlow(flowTotal).get("dn_mm")),
+                    java.util.Collections.emptySet());
+            if (tapHit != null) {
+                v.warnings.add("врезка: новая камера в отступе запретной зоны " + tapHit
+                        + " — чистой позиции на участке не нашлось (§3.1)");
+            }
         }
         v.taps.add(tap);
         // Разъяснение №10: место присоединения — не пересечение, спецпроход
@@ -421,31 +539,17 @@ public final class Pipeline {
         double packDn = RefData.num(ref.diameterForFlow(flowTotal).get("dn_mm"));
         if (pack.size() == 1) {
             Model.ConnectionTarget t = pack.get(0);
-            List<Coordinate> coords = routeToTarget(grid, tap.point, t, turnPenalty, packDn, zoneById, v);
-            if (coords == null) {
+            boolean ok = appendChecked(grid, tap.point, null, t,
+                    tap.point.getCoordinate(), t.point.getCoordinate(),
+                    flowTotal, "branch", tapNode, t.objectId,
+                    turnPenalty, packDn, zoneById, ref, seq, v, t.objectId);
+            if (!ok) {
                 v.unconnected.add(new Unconnected(t.objectId, t.anchor(), t.flowTph,
                         "A* не нашёл маршрут до точки подключения"));
                 rollback.run();
                 return;
             }
-            snapEnds(coords, tap.point.getCoordinate(), t.point.getCoordinate());
-            appendSegment(coords, flowTotal, "branch", tapNode, t.objectId,
-                    grid, ref, seq, v, t.objectId);
         } else {
-            Point branchPt = gridSnapFree(grid, clusterCenter);
-            List<Coordinate> trunk = route(grid, tap.point, branchPt, turnPenalty, packDn);
-            if (trunk == null) {
-                for (Model.ConnectionTarget t : pack) {
-                    v.unconnected.add(new Unconnected(t.objectId, t.anchor(), t.flowTph,
-                            "A* не нашёл маршрут ствола"));
-                }
-                rollback.run();
-                return;
-            }
-            seq.merge("chamber", 1, Integer::sum);
-            String branchNode = "ch-" + seq.get("chamber");
-            v.newChambers.add(new NewChamber(branchNode, "branching",
-                    branchPt, null, 0.0));
             StringBuilder owner = new StringBuilder();
             for (int i = 0; i < pack.size(); i++) {
                 if (i > 0) {
@@ -453,20 +557,34 @@ public final class Pipeline {
                 }
                 owner.append(pack.get(i).objectId);
             }
-            snapEnds(trunk, tap.point.getCoordinate(), branchPt.getCoordinate());
-            appendSegment(trunk, flowTotal, "trunk", tapNode, branchNode,
-                    grid, ref, seq, v, owner.toString());
+            // камера разветвления — в точке, выдерживающей отступы §3.1
+            Point branchPt = grid.snapFreeClearance(clusterCenter, packDn);
+            seq.merge("chamber", 1, Integer::sum);
+            String branchNode = "ch-" + seq.get("chamber");
+            v.newChambers.add(new NewChamber(branchNode, "branching",
+                    branchPt, null, 0.0));
+            boolean ok = appendChecked(grid, tap.point, branchPt, null,
+                    tap.point.getCoordinate(), branchPt.getCoordinate(),
+                    flowTotal, "trunk", tapNode, branchNode,
+                    turnPenalty, packDn, zoneById, ref, seq, v, owner.toString());
+            if (!ok) {
+                for (Model.ConnectionTarget t : pack) {
+                    v.unconnected.add(new Unconnected(t.objectId, t.anchor(), t.flowTph,
+                            "A* не нашёл маршрут ствола"));
+                }
+                rollback.run();
+                return;
+            }
             for (Model.ConnectionTarget t : pack) {
                 double dnT = RefData.num(ref.diameterForFlow(t.flowTph).get("dn_mm"));
-                List<Coordinate> coords = routeToTarget(grid, branchPt, t, turnPenalty, dnT, zoneById, v);
-                if (coords == null) {
+                boolean okBr = appendChecked(grid, branchPt, null, t,
+                        branchPt.getCoordinate(), t.point.getCoordinate(),
+                        t.flowTph, "branch", branchNode, t.objectId,
+                        turnPenalty, dnT, zoneById, ref, seq, v, t.objectId);
+                if (!okBr) {
                     v.unconnected.add(new Unconnected(t.objectId, t.anchor(), t.flowTph,
                             "A* не нашёл маршрут ветви"));
-                    continue;
                 }
-                snapEnds(coords, branchPt.getCoordinate(), t.point.getCoordinate());
-                appendSegment(coords, t.flowTph, "branch", branchNode, t.objectId,
-                        grid, ref, seq, v, t.objectId);
             }
         }
         assertTree(v.newSegments.subList(segsBefore, v.newSegments.size()), v.warnings);
@@ -493,15 +611,23 @@ public final class Pipeline {
                                                   double turnPenalty, double dnMm,
                                                   Map<String, Model.ConstraintZone> zoneById,
                                                   Variant v) {
+        return routeToTarget(grid, from, t, turnPenalty, dnMm, zoneById, v, 0.0);
+    }
+
+    private static List<Coordinate> routeToTarget(ConstraintGrid grid, Point from,
+                                                  Model.ConnectionTarget t,
+                                                  double turnPenalty, double dnMm,
+                                                  Map<String, Model.ConstraintZone> zoneById,
+                                                  Variant v, double marginM) {
         Model.ConstraintZone own = t.oksZoneId != null ? zoneById.get(t.oksZoneId) : null;
         if (own == null) {
-            return route(grid, from, t.point, turnPenalty, dnMm);
+            return route(grid, from, t.point, turnPenalty, dnMm, marginM);
         }
         List<int[]> freed = grid.freeCells(own.geom);
         List<int[]> blocked = null;
         List<Coordinate> path;
         try {
-            blocked = grid.clearanceBlock(dnMm, Set.of(t.oksZoneId));
+            blocked = grid.clearanceBlock(dnMm, Set.of(t.oksZoneId), marginM);
             path = grid.astar(from.getX(), from.getY(), t.point.getX(), t.point.getY(), turnPenalty);
         } finally {
             if (blocked != null) {
@@ -512,7 +638,7 @@ public final class Pipeline {
         if (path == null) {
             return null;
         }
-        return cutFinalApproach(path, own, t, grid, v);
+        return cutFinalApproach(path, own, t, grid, v, dnMm);
     }
 
     /**
@@ -524,7 +650,8 @@ public final class Pipeline {
     private static List<Coordinate> cutFinalApproach(List<Coordinate> path,
                                                      Model.ConstraintZone own,
                                                      Model.ConnectionTarget t,
-                                                     ConstraintGrid grid, Variant v) {
+                                                     ConstraintGrid grid, Variant v,
+                                                     double dnMm) {
         PreparedGeometry prep = PreparedGeometryFactory.prepare(own.geom);
         int firstInside = -1;
         for (int i = 0; i < path.size(); i++) {
@@ -554,6 +681,14 @@ public final class Pipeline {
         if (hitId != null) {
             v.warnings.add(t.objectId + ": прямой финальный участок пересекает запретную зону "
                     + hitId + " — оставлен маршрут A* (§2.2: остальные ограничения действуют)");
+            return path;
+        }
+        // §3.1: финальный прямой участок обязан выдерживать отступы ЧУЖИХ
+        // запретных зон (освобождение §2.2 касается только своего полигона)
+        List<String> tailViol = grid.clearanceViolations(tail, dnMm, Set.of(own.objectId));
+        if (!tailViol.isEmpty()) {
+            v.warnings.add(t.objectId + ": прямой финальный участок нарушает отступ зон "
+                    + tailViol + " — оставлен маршрут A* (§3.1)");
             return path;
         }
         List<Coordinate> out = new ArrayList<>(path.subList(0, firstInside));
@@ -607,7 +742,11 @@ public final class Pipeline {
                                       String startNodeId, String endNodeId,
                                       ConstraintGrid grid, RefData ref, Map<String, Integer> seq,
                                       Variant v, String ownerId) {
-        List<Coordinate> pts = Postprocess.simplifyPath(coords, grid.cell * 0.75);
+        double tolSimplify = ref.rule("simplify_tolerance_m");
+        if (tolSimplify <= 0) {
+            tolSimplify = 0.4;
+        }
+        List<Coordinate> pts = Postprocess.simplifyPath(coords, tolSimplify);
         if (!Postprocess.checkSelfIntersection(pts)) {
             v.warnings.add(ownerId + ": самопересечение трассы после упрощения — оставлено как есть");
         }
@@ -705,12 +844,89 @@ public final class Pipeline {
     /** A* с временными отступами запретных зон под диаметр трассы (таблица 2). */
     private static List<Coordinate> route(ConstraintGrid grid, Point a, Point b,
                                           Double turnPenaltyM, double dnMm) {
-        List<int[]> blocked = grid.clearanceBlock(dnMm);
+        return route(grid, a, b, turnPenaltyM, dnMm, 0.0);
+    }
+
+    /** A* с отступами + запас marginM (лестница перероута после точной проверки). */
+    private static List<Coordinate> route(ConstraintGrid grid, Point a, Point b,
+                                          Double turnPenaltyM, double dnMm,
+                                          double marginM) {
+        List<int[]> blocked = grid.clearanceBlock(dnMm,
+                java.util.Collections.emptySet(), marginM);
         try {
             return grid.astar(a.getX(), a.getY(), b.getX(), b.getY(), turnPenaltyM);
         } finally {
             grid.clearanceUnblock(blocked);
         }
+    }
+
+    /**
+     * Маршрут + оформление участков с ТОЧНЫМ контролем отступов (§3.1) по
+     * ФАКТИЧЕСКИ выгружаемым геометриям (после snapEnds и упрощения).
+     * Лестница запаса к буферу: 0 → +1 → +2 → +clearance_retry_max_m м;
+     * не прошедшие проверку куски откатываются, маршрут строится заново.
+     * Возвращает false, если маршрут не найден вовсе (точка уйдёт
+     * в неподключённые); если отступы не выдержаны ни на одном запасе —
+     * оформляется базовый маршрут с предупреждением.
+     */
+    private static boolean appendChecked(ConstraintGrid grid, Point from, Point toPlain,
+                                         Model.ConnectionTarget t,
+                                         Coordinate snapA, Coordinate snapB,
+                                         double flow, String role,
+                                         String startNodeId, String endNodeId,
+                                         double turnPenalty, double dnMm,
+                                         Map<String, Model.ConstraintZone> zoneById,
+                                         RefData ref, Map<String, Integer> seq,
+                                         Variant v, String owner) {
+        Set<String> skip = t != null && t.oksZoneId != null
+                ? Set.of(t.oksZoneId) : java.util.Collections.<String>emptySet();
+        double maxMargin = ref.rule("clearance_retry_max_m");
+        if (maxMargin <= 0) {
+            maxMargin = 4.0;
+        }
+        double[] ladder = {0.0, 1.0, 2.0, maxMargin};
+        int segs0 = v.newSegments.size();
+        int tech0 = v.techNodes.size();
+        List<String> bestViol = null;
+        for (double margin : ladder) {
+            List<Coordinate> raw = t != null
+                    ? routeToTarget(grid, from, t, turnPenalty, dnMm, zoneById, v, margin)
+                    : route(grid, from, toPlain, turnPenalty, dnMm, margin);
+            if (raw == null) {
+                continue;
+            }
+            snapEnds(raw, snapA, snapB);
+            appendSegment(raw, flow, role, startNodeId, endNodeId, grid, ref, seq, v, owner);
+            List<String> viol = new ArrayList<>();
+            for (NewSegment s : v.newSegments.subList(segs0, v.newSegments.size())) {
+                LineString line = GF.createLineString(s.coords.toArray(new Coordinate[0]));
+                viol.addAll(grid.clearanceViolations(line, s.diameterMm, skip));
+            }
+            if (viol.isEmpty()) {
+                if (margin > 0) {
+                    v.warnings.add(owner + ": отступы выдержаны перероутом с запасом +"
+                            + margin + " м (§3.1)");
+                }
+                return true;
+            }
+            sublistClear(v.newSegments, segs0);
+            sublistClear(v.techNodes, tech0);
+            if (bestViol == null || viol.size() < bestViol.size()) {
+                bestViol = viol;
+            }
+        }
+        List<Coordinate> raw = t != null
+                ? routeToTarget(grid, from, t, turnPenalty, dnMm, zoneById, v, 0.0)
+                : route(grid, from, toPlain, turnPenalty, dnMm, 0.0);
+        if (raw == null) {
+            return false;
+        }
+        snapEnds(raw, snapA, snapB);
+        appendSegment(raw, flow, role, startNodeId, endNodeId, grid, ref, seq, v, owner);
+        v.warnings.add(owner + ": отступы запретных зон " + bestViol
+                + " не выдержаны даже с запасом +" + maxMargin
+                + " м — оставлен базовый маршрут (§3.1)");
+        return true;
     }
 
     /** Ближайшая свободная ячейка к точке — как Point. */

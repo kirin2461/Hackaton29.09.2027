@@ -53,6 +53,20 @@ public final class Tapping {
     public static Tap chooseTapStrict(Point anchor, double flowTph,
                                       ExistingNetwork net, RefData refdata,
                                       Map<String, Integer> chamberLoad) {
+        return chooseTapStrict(anchor, flowTph, net, refdata, chamberLoad, null);
+    }
+
+    /**
+     * Строгое правило §2.4 + §3.1: новая камера не должна попадать в отступ
+     * чужой запретной зоны. Если ближайшая проекция нарушает отступ,
+     * точка сдвигается вдоль того же участка к ближайшей «чистой» позиции
+     * (шаг 2 м, до ±30 м). Существующие камеры не сдвигаются — они часть
+     * действующей сети.
+     */
+    public static Tap chooseTapStrict(Point anchor, double flowTph,
+                                      ExistingNetwork net, RefData refdata,
+                                      Map<String, Integer> chamberLoad,
+                                      ConstraintGrid grid) {
         double maxDist = refdata.rule("chamber_tap_max_dist_m");
         int maxConn = (int) refdata.rule("max_chamber_connections");
         double snapM = refdata.rule("chamber_snap_m");
@@ -106,6 +120,34 @@ public final class Tapping {
         // --- шаг 3: новая камера в выбранной точке существующего участка ---
         if (projection == null) {
             return null; // сети в радиусе поиска нет — точка уйдёт в неподключённые
+        }
+        // §3.1: точка новой камеры обязана выдерживать отступы запретных зон
+        if (grid != null && grid.forbiddenReason(projection, requiredDn,
+                java.util.Collections.<String>emptySet()) != null) {
+            Model.Segment seg = net.segments.get(projectionSegmentId);
+            org.locationtech.jts.linearref.LengthIndexedLine lil =
+                    new org.locationtech.jts.linearref.LengthIndexedLine(seg.geom);
+            double along = lil.indexOf(anchor.getCoordinate());
+            double found = Double.NaN;
+            for (double off = 2.0; off <= 30.0 && Double.isNaN(found); off += 2.0) {
+                for (double sgn : new double[]{1.0, -1.0}) {
+                    double idx = along + sgn * off;
+                    if (idx < lil.getStartIndex() || idx > lil.getEndIndex()) {
+                        continue;
+                    }
+                    Point cand = seg.geom.getFactory().createPoint(lil.extractPoint(idx));
+                    if (grid.forbiddenReason(cand, requiredDn,
+                            java.util.Collections.<String>emptySet()) == null) {
+                        found = idx;
+                        break;
+                    }
+                }
+            }
+            if (!Double.isNaN(found)) {
+                projection = seg.geom.getFactory().createPoint(lil.extractPoint(found));
+            }
+            // чистой позиции на участке нет — оставляем исходную проекцию,
+            // конвейер запишет предупреждение
         }
         return new Tap("new_chamber_on_segment", projection, flowTph, requiredDn,
                 null, projectionSegmentId);

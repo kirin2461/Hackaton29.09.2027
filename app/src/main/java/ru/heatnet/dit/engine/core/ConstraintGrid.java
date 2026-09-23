@@ -91,13 +91,46 @@ public class ConstraintGrid {
         return cells;
     }
 
+    /**
+     * Ячейки, ПЕРЕСЕКАЮЩИЕ геометрию (консервативно: вся ячейка снаружи
+     * гарантированно свободна). Для запретных зон и буферов отступов §3.1 —
+     * критерий по центру ячейки пропускал до половины буфера и давал заходы
+     * в отступ/полигон после упрощения трассы.
+     */
+    private List<int[]> cellsIntersecting(Geometry geom) {
+        var env = geom.getEnvelopeInternal();
+        int i0 = Math.max(0, (int) ((env.getMinX() - ox) / cell) - 1);
+        int j0 = Math.max(0, (int) ((env.getMinY() - oy) / cell) - 1);
+        int i1 = Math.min(nx - 1, (int) ((env.getMaxX() - ox) / cell) + 2);
+        int j1 = Math.min(ny - 1, (int) ((env.getMaxY() - oy) / cell) + 2);
+        PreparedGeometry prepared = PreparedGeometryFactory.prepare(geom);
+        List<int[]> cells = new ArrayList<>();
+        for (int i = i0; i <= i1; i++) {
+            for (int j = j0; j <= j1; j++) {
+                double[] c = cellCenter(i, j);
+                double h = cell / 2.0;
+                Geometry sq = geom.getFactory().createPolygon(
+                        new Coordinate[]{
+                                new Coordinate(c[0] - h, c[1] - h),
+                                new Coordinate(c[0] + h, c[1] - h),
+                                new Coordinate(c[0] + h, c[1] + h),
+                                new Coordinate(c[0] - h, c[1] + h),
+                                new Coordinate(c[0] - h, c[1] - h)});
+                if (prepared.intersects(sq)) {
+                    cells.add(new int[]{i, j});
+                }
+            }
+        }
+        return cells;
+    }
+
     /** Растеризовать ограничения: запретные — геометрия, спец — Kспец. */
     @SuppressWarnings("unchecked")
     public void applyConstraints(List<Model.ConstraintZone> zones) {
         for (Model.ConstraintZone z : zones) {
             if ("forbidden".equals(z.kind)) {
                 forbiddenZones.add(z);
-                for (int[] c : cellsCoveredBy(z.geom)) {
+                for (int[] c : cellsIntersecting(z.geom)) {
                     blocked[c[0]][c[1]] = true;
                 }
             } else if ("special_passage".equals(z.kind)) {
@@ -136,6 +169,68 @@ public class ConstraintGrid {
     }
 
     /**
+     * Буфер с дополнительным запасом (для перероута после точной проверки:
+     * растр с шагом grid_cell_m и упрощение могут «срезать» до ~полудиагонали
+     * ячейки — запас компенсирует дискретизацию).
+     */
+    private Geometry clearanceBufferGeom(Model.ConstraintZone zone, double dnMm,
+                                         double extraMarginM) {
+        if (extraMarginM <= 0) {
+            return clearanceBufferGeom(zone, dnMm);
+        }
+        String key = zone.objectId + ":" + (int) dnMm + ":+" + extraMarginM;
+        Geometry cached = clearanceCache.get(key);
+        if (cached == null) {
+            double dist = refdata.minDistanceM(
+                    zone.restrictionType != null ? zone.restrictionType : "", dnMm);
+            dist += refdata.envelopeWidthM(dnMm) / 2.0 + extraMarginM;
+            cached = zone.geom.buffer(dist);
+            clearanceCache.put(key, cached);
+        }
+        return cached;
+    }
+
+    /** Блокировка отступов с запасом extraMarginM (лестница перероута). */
+    public List<int[]> clearanceBlock(double dnMm, Set<String> skipZoneIds,
+                                      double extraMarginM) {
+        if (extraMarginM <= 0) {
+            return clearanceBlock(dnMm, skipZoneIds);
+        }
+        List<int[]> cells = new ArrayList<>();
+        for (Model.ConstraintZone z : forbiddenZones) {
+            if (skipZoneIds.contains(z.objectId)) {
+                continue;
+            }
+            for (int[] c : cellsIntersecting(clearanceBufferGeom(z, dnMm, extraMarginM))) {
+                if (!blocked[c[0]][c[1]]) {
+                    blocked[c[0]][c[1]] = true;
+                    cells.add(c);
+                }
+            }
+        }
+        return cells;
+    }
+
+    /**
+     * ТОЧНАЯ проверка отступов (§3.1, таблица 5.1): id запретных зон, чей
+     * буфер «отступ + полгабарита» пересекает линию. По геометрии, без растра;
+     * зоны из skipZoneIds пропускаются (свой полигон ОКС, §2.2).
+     */
+    public List<String> clearanceViolations(LineString line, double dnMm,
+                                            Set<String> skipZoneIds) {
+        List<String> hits = new ArrayList<>();
+        for (Model.ConstraintZone z : forbiddenZones) {
+            if (skipZoneIds.contains(z.objectId)) {
+                continue;
+            }
+            if (clearanceBufferGeom(z, dnMm).intersects(line)) {
+                hits.add(z.objectId);
+            }
+        }
+        return hits;
+    }
+
+    /**
      * Временно заблокировать отступы запретных зон под диаметр трассы.
      * Зоны из skipZoneIds пропускаются — §2.2: отступ к СВОЕМУ полигону ОКС
      * на финальный участок к целевой точке не распространяется.
@@ -147,7 +242,7 @@ public class ConstraintGrid {
                 continue;
             }
             Geometry buf = clearanceBufferGeom(z, dnMm);
-            for (int[] c : cellsCoveredBy(buf)) {
+            for (int[] c : cellsIntersecting(buf)) {
                 if (!blocked[c[0]][c[1]]) {
                     blocked[c[0]][c[1]] = true;
                     cells.add(c);
@@ -169,7 +264,7 @@ public class ConstraintGrid {
      */
     public List<int[]> freeCells(Geometry geom) {
         List<int[]> freed = new ArrayList<>();
-        for (int[] c : cellsCoveredBy(geom)) {
+        for (int[] c : cellsIntersecting(geom)) {
             if (blocked[c[0]][c[1]]) {
                 blocked[c[0]][c[1]] = false;
                 freed.add(c);
@@ -208,6 +303,36 @@ public class ConstraintGrid {
 
     public String forbiddenReason(Point pt, Double dnMm) {
         return forbiddenReason(pt, dnMm, java.util.Collections.emptySet());
+    }
+
+    /**
+     * Ближайшая к pt ячейка, которая И свободна в растре, И чей центр
+     * выдерживает отступы запретных зон под ДУ dnMm (§3.1) — для постановки
+     * новых камер разветвления. Кольца до 8 ячеек (~24 м); иначе — исходная
+     * точка (конвейер зафиксирует предупреждение).
+     */
+    public Point snapFreeClearance(Point pt, double dnMm) {
+        int[] base = toCell(pt.getX(), pt.getY());
+        for (int r = 0; r <= 8; r++) {
+            for (int di = -r; di <= r; di++) {
+                for (int dj = -r; dj <= r; dj++) {
+                    if (Math.max(Math.abs(di), Math.abs(dj)) != r) {
+                        continue;
+                    }
+                    int i = base[0] + di;
+                    int j = base[1] + dj;
+                    if (i < 0 || i >= nx || j < 0 || j >= ny || blocked[i][j]) {
+                        continue;
+                    }
+                    double[] c = cellCenter(i, j);
+                    Point cand = pt.getFactory().createPoint(new Coordinate(c[0], c[1]));
+                    if (forbiddenReason(cand, dnMm) == null) {
+                        return cand;
+                    }
+                }
+            }
+        }
+        return pt;
     }
 
     /**
@@ -509,6 +634,13 @@ public class ConstraintGrid {
                     continue;
                 }
                 if (blocked[ni][nj]) {
+                    continue;
+                }
+                // Диагональный ход нельзя резать через угол заблокированной
+                // ячейки: линия центров иначе проходит через чужую зону/отступ
+                if (dirIdx >= 4
+                        && (blocked[e.i + (int) NEIGHBOURS[dirIdx][0]][e.j]
+                                || blocked[e.i][e.j + (int) NEIGHBOURS[dirIdx][1]])) {
                     continue;
                 }
                 double[] nc = cellCenter(ni, nj);

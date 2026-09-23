@@ -156,17 +156,12 @@ public class RefData {
         return num(diameterEntry(dnMm).get("cost_new_rub_m"));
     }
 
-    /** Ставка реконструкции по ТРЕБУЕМОМУ диаметру, ₽/м (§7, таблица 4.1). */
-    public double reconTariff(double dnMm) {
-        return num(diameterEntry(dnMm).get("cost_recon_rub_m"));
-    }
-
-    /** §8.2: стоимость одной врезки (любого вида). */
+    /** §3.2: стоимость врезки в существующую камеру (за новый участок). */
     public double tieInCost() {
-        return num(tariffs.get("tie_in"));
+        return num(tariffs.get("tie_in_existing_chamber"));
     }
 
-    /** §8.2: стоимость камеры по наибольшему Ду примыкающих участков. */
+    /** §3.2: стоимость камеры по наибольшему ДУ примыкающих участков. */
     @SuppressWarnings("unchecked")
     public double chamberCost(double maxDnMm) {
         List<Map<String, Object>> scale = (List<Map<String, Object>>) tariffs.get("chamber_cost_scale");
@@ -178,7 +173,7 @@ public class RefData {
         return num(scale.get(scale.size() - 1).get("cost_rub"));
     }
 
-    /** §8.3: штраф за неподключённый ОКС = 100 млн + 500 тыс. × G. */
+    /** §6: штраф за неподключённую точку = 100 млн + 500 тыс. × G. */
     public double unconnectedPenalty(double flowTph) {
         return num(tariffs.get("unconnected_penalty_base"))
                 + num(tariffs.get("unconnected_penalty_per_tph")) * flowTph;
@@ -210,5 +205,19 @@ public class RefData {
             return 1.0;
         }
         return 1.0 + depthRule("depth_cost_rate", 0.10) * (depthM - free);
+    }
+
+    /**
+     * §4: условный габарит и глубина существующей коммуникации
+     * (глубина до ВЕРХА габарита; габарит heat_network — по таблице 1).
+     * null — тип не описан.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> existingUtility(String restrictionType) {
+        Object m = depth.get("existing_utilities");
+        if (!(m instanceof Map)) {
+            return null;
+        }
+        return (Map<String, Object>) ((Map<String, Object>) m).get(restrictionType);
     }
 }

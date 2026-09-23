@@ -27,14 +27,17 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Потоковый загрузчик конкурсного GeoJSON (официальная схема §2.1).
+ * Потоковый загрузчик конкурсного GeoJSON (официальная схема §1,
+ * актуальная редакция техприложения).
  *
  * Файл до 3 ГБ читается стримингом Jackson — объекты разбираются по одному,
  * в память не поднимаются целиком. СК формализованы техприложением:
  * вход — EPSG:4326 (валидируется, иное отклоняется), все расчёты —
  * в EPSG:32637 (переопределяется ENGINE_SOURCE_CRS / ENGINE_WORK_CRS).
  *
- * Невалидная геометрия — диагностическая ошибка (протокол 16.09.2026, п.9).
+ * Цели подключения — точки oks_connection_point с собственным flow_tph;
+ * полигоны ОКС приходят как restriction с restriction_type = oks (§1.2).
+ * Невалидная геометрия — диагностическая ошибка.
  */
 public final class Loader {
 
@@ -55,10 +58,9 @@ public final class Loader {
         OBJECT_TYPE_ALIASES.put("heat_chamber", "chamber");
         OBJECT_TYPE_ALIASES.put("chamber", "chamber");
         OBJECT_TYPE_ALIASES.put("thermal_chamber", "chamber");
-        OBJECT_TYPE_ALIASES.put("oks_future", "prospective_building");
-        OBJECT_TYPE_ALIASES.put("prospective_building", "prospective_building");
-        OBJECT_TYPE_ALIASES.put("building", "prospective_building");
-        OBJECT_TYPE_ALIASES.put("oks", "prospective_building");
+        OBJECT_TYPE_ALIASES.put("oks_future", "legacy_building");
+        OBJECT_TYPE_ALIASES.put("prospective_building", "legacy_building");
+        OBJECT_TYPE_ALIASES.put("building", "legacy_building");
         OBJECT_TYPE_ALIASES.put("oks_connection_point", "connection_point");
         OBJECT_TYPE_ALIASES.put("connection_point", "connection_point");
         OBJECT_TYPE_ALIASES.put("oks_existing", "oks_existing");
@@ -84,6 +86,9 @@ public final class Loader {
         RESTRICTION_TYPE_ALIASES.put("social_area", "social_area");
         RESTRICTION_TYPE_ALIASES.put("prohibited_site", "prohibited_site");
         RESTRICTION_TYPE_ALIASES.put("water", "water");
+        RESTRICTION_TYPE_ALIASES.put("railway", "railway");
+        RESTRICTION_TYPE_ALIASES.put("rail", "railway");
+        RESTRICTION_TYPE_ALIASES.put("oks", "oks");
         RESTRICTION_TYPE_ALIASES.put("oks_existing", "oks_existing");
         RESTRICTION_TYPE_ALIASES.put("forbidden", "prohibited_site");
         RESTRICTION_TYPE_ALIASES.put("no_build", "prohibited_site");
@@ -117,8 +122,9 @@ public final class Loader {
         data.crsFrom = crsFrom;
         data.crsWork = crsWork;
 
-        Map<String, Point> connPoints = new LinkedHashMap<>();
-        Map<String, String> connOwner = new LinkedHashMap<>();
+        Map<String, String> legacyOwner = new LinkedHashMap<>();   // точка -> oks_id (ранние наборы)
+        Map<String, Double> legacyFlow = new LinkedHashMap<>();    // oks_id -> flow_tph (ранние наборы)
+        List<Model.ConstraintZone> oksPolygons = new ArrayList<>(); // полигоны ОКС (oks/oks_existing)
         List<String> invalidGeom = new ArrayList<>();
         double[] bounds = {Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY,
                 Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY};
@@ -145,9 +151,10 @@ public final class Loader {
                 if (kind == null) {
                     continue; // неизвестный тип объекта — пропуск без диагностики
                 }
-                String oid = textOf(pick(props, "object_id", "id", "uid"));
+                JsonNode oidNode = pick(props, "object_id", "id", "uid");
+                String oid = textOf(oidNode);
                 if (oid == null) {
-                    oid = kind + ":" + (data.segments.size() + data.chambers.size() + data.buildings.size());
+                    oid = kind + ":" + (data.segments.size() + data.chambers.size() + data.targets.size());
                 }
                 Geometry geom = project(buildGeom(feat.get("geometry")), project);
                 String bad = geometryProblem(geom);
@@ -176,35 +183,55 @@ public final class Loader {
                         break;
                     case "chamber":
                         data.chambers.put(oid, new Model.Chamber(
-                                oid,
+                                oid, oidNode,
                                 geom instanceof Point ? (Point) geom : geom.getCentroid(),
                                 asFloatObj(pick(props, "diameter", "diameter_mm", "dn_mm", "dn")),
                                 (int) orZero(asFloatObj(pick(props, "occupied_connections", "occupied"))),
                                 textOf(pick(props, "upstream_object_id", "next_object_id", "next_id", "next"))));
                         break;
-                    case "prospective_building":
-                        data.buildings.put(oid, new Model.Building(
-                                oid, geom,
-                                orZero(asFloatObj(pick(props, "flow_tph", "flow", "consumption_tph")))));
-                        break;
-                    case "connection_point": {
-                        Point pt = geom instanceof Point ? (Point) geom : geom.getCentroid();
-                        connPoints.put(oid, pt);
-                        String owner = textOf(pick(props, "oks_id", "building_id", "parent_id"));
-                        if (owner != null) {
-                            connOwner.put(oid, owner);
+                    case "legacy_building": {
+                        // Ранняя схема: oks_future с flow_tph на полигоне.
+                        // Полигон — ограничение oks (таблица 2), расход наследуют
+                        // привязанные точки подключения без собственного flow_tph.
+                        double flow = orZero(asFloatObj(pick(props, "flow_tph", "flow", "consumption_tph")));
+                        legacyFlow.put(oid, flow);
+                        if (geom instanceof Polygon || geom instanceof MultiPolygon) {
+                            Model.ConstraintZone zone = new Model.ConstraintZone(
+                                    oid, geom, "forbidden", propsToMap(props), "oks");
+                            data.constraints.add(zone);
+                            oksPolygons.add(zone);
                         }
                         break;
                     }
-                    case "oks_existing":
-                        // Существующий ОКС — запретная зона с отступом по Ду (§5.1)
-                        data.constraints.add(new Model.ConstraintZone(
-                                oid, geom, "forbidden", propsToMap(props), "oks_existing"));
+                    case "connection_point": {
+                        // §1.1: самостоятельная цель с собственным flow_tph
+                        Point pt = geom instanceof Point ? (Point) geom : geom.getCentroid();
+                        double flow = orZero(asFloatObj(pick(props, "flow_tph", "flow", "consumption_tph")));
+                        data.targets.put(oid, new Model.ConnectionTarget(oid, oidNode, pt, flow));
+                        String owner = textOf(pick(props, "oks_id", "building_id", "parent_id"));
+                        if (owner != null) {
+                            legacyOwner.put(oid, owner);
+                        }
                         break;
+                    }
+                    case "oks_existing": {
+                        // Существующий ОКС — запретная зона с отступом по ДУ (таблица 2)
+                        Model.ConstraintZone zone = new Model.ConstraintZone(
+                                oid, geom, "forbidden", propsToMap(props), "oks_existing");
+                        data.constraints.add(zone);
+                        if (geom instanceof Polygon || geom instanceof MultiPolygon) {
+                            oksPolygons.add(zone);
+                        }
+                        break;
+                    }
                     case "constraint": {
                         Model.ConstraintZone zone = resolveConstraint(oid, props, geom, refdata, data.warnings);
                         if (zone != null) {
                             data.constraints.add(zone);
+                            if (isOks(zone.restrictionType)
+                                    && (zone.geom instanceof Polygon || zone.geom instanceof MultiPolygon)) {
+                                oksPolygons.add(zone);
+                            }
                         }
                         break;
                     }
@@ -224,28 +251,30 @@ public final class Loader {
                     "невалидная геометрия (" + invalidGeom.size() + " объектов): " + shown + more);
         }
 
-        // Привязка точек подключения к ОКС (§2.2: oks_id)
-        for (Map.Entry<String, Point> e : connPoints.entrySet()) {
-            String owner = connOwner.get(e.getKey());
-            Model.Building target = owner != null ? data.buildings.get(owner) : null;
-            if (target != null) {
-                target.connectionPoint = e.getValue();
-                target.connectionPointId = e.getKey();
-            } else {
-                // Точка без владельца — ближайший ОКС
-                Model.Building best = null;
-                double bestDist = Double.POSITIVE_INFINITY;
-                for (Model.Building b : data.buildings.values()) {
-                    double d = b.anchor().distance(e.getValue());
-                    if (d < bestDist) {
-                        bestDist = d;
-                        best = b;
+        // Наследование расхода из ранних наборов (oks_id -> flow_tph полигона)
+        for (Map.Entry<String, String> e : legacyOwner.entrySet()) {
+            Model.ConnectionTarget t = data.targets.get(e.getKey());
+            Double flow = legacyFlow.get(e.getValue());
+            if (t != null && t.flowTph == 0.0 && flow != null) {
+                t.flowTph = flow;
+            }
+        }
+
+        // §2.2: связь точки подключения с полигоном ОКС — пространственная
+        // (идентификатором не задаётся). Содержащий полигон — «свой»:
+        // к нему применяется правило финального прямого участка.
+        for (Model.ConnectionTarget t : data.targets.values()) {
+            Model.ConstraintZone best = null;
+            for (Model.ConstraintZone zone : oksPolygons) {
+                if (org.locationtech.jts.geom.prep.PreparedGeometryFactory.prepare(zone.geom)
+                        .covers(t.point)) {
+                    if (best == null || zone.geom.getArea() < best.geom.getArea()) {
+                        best = zone;
                     }
                 }
-                if (best != null && bestDist < 200) {
-                    best.connectionPoint = e.getValue();
-                    best.connectionPointId = e.getKey();
-                }
+            }
+            if (best != null) {
+                t.oksZoneId = best.objectId;
             }
         }
 
@@ -254,8 +283,8 @@ public final class Loader {
                     "во входном файле не найдено объектов конкурсной схемы "
                             + "(heat_network / heat_chamber с properties.object_type)");
         }
-        if (data.buildings.isEmpty()) {
-            data.warnings.add("перспективные ОКС не найдены — результат пуст");
+        if (data.targets.isEmpty()) {
+            data.warnings.add("точки подключения ОКС (oks_connection_point) не найдены — результат пуст");
         }
         if (bounds[0] == Double.POSITIVE_INFINITY) {
             throw new PipelineInputException("входной файл не содержит геометрий");
@@ -315,9 +344,18 @@ public final class Loader {
         return null;
     }
 
+    /**
+     * Код EPSG из обозначения СК. CRS84 (стандартный CRS GeoJSON по
+     * RFC 7946, долгота/широта WGS 84) эквивалентен EPSG:4326 в порядке
+     * координат GeoJSON — официальный датасет объявляет именно его.
+     */
     private static Integer epsgCode(String text) {
         if (text == null) {
             return null;
+        }
+        String up = text.toUpperCase(java.util.Locale.ROOT);
+        if (up.contains("CRS84") || up.contains("CRS:84")) {
+            return 4326;
         }
         Matcher m = EPSG_RE.matcher(text);
         return m.find() ? Integer.parseInt(m.group(1)) : null;
@@ -341,6 +379,13 @@ public final class Loader {
                 return GF.createPoint(toCoordinate(coords));
             case "LineString":
                 return GF.createLineString(toCoordinates(coords));
+            case "MultiLineString": {
+                List<LineString> lines = new ArrayList<>();
+                for (JsonNode part : coords) {
+                    lines.add(GF.createLineString(toCoordinates(part)));
+                }
+                return GF.createMultiLineString(lines.toArray(new LineString[0]));
+            }
             case "Polygon": {
                 List<Coordinate[]> rings = new ArrayList<>();
                 for (JsonNode ring : coords) {
@@ -440,6 +485,11 @@ public final class Loader {
 
     // ------------------------------------------------------------------
     // ограничения
+
+    /** ОКС-тип ограничения (свои полигоны подключения). */
+    static boolean isOks(String restrictionType) {
+        return "oks".equals(restrictionType) || "oks_existing".equals(restrictionType);
+    }
 
     /** Свести restriction к виду правила (forbidden / special_passage). */
     private static Model.ConstraintZone resolveConstraint(String oid, Map<String, JsonNode> props,

@@ -6,11 +6,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Мульти-ОКС: кластеризация под общий ствол (§2.11 ТЗ).
+ * Кластеризация точек подключения под общий ствол (§2.1: несколько точек
+ * могут использовать общий участок сети).
  *
- * Перспективные ОКС, чьи точки подключения ближе cluster_radius_m,
- * рассматриваются как кандидаты на СОВМЕСТНОЕ подключение: один ствол
- * от точки врезки до камеры разветвления, от неё — ветви к каждому ОКС.
+ * Точки oks_connection_point, расположенные ближе cluster_radius_m друг
+ * от друга, — кандидаты на СОВМЕСТНОЕ подключение: один ствол от места
+ * присоединения до камеры разветвления, от неё — ветви к каждой точке.
  */
 public final class Clustering {
 
@@ -18,9 +19,9 @@ public final class Clustering {
     }
 
     /** Жадная кластеризация по близости точек подключения (union-find). */
-    public static List<List<Model.Building>> clusterBuildings(
-            Map<String, Model.Building> buildings, double radiusM) {
-        List<Model.Building> items = new ArrayList<>(buildings.values());
+    public static List<List<Model.ConnectionTarget>> clusterTargets(
+            Map<String, Model.ConnectionTarget> targets, double radiusM) {
+        List<Model.ConnectionTarget> items = new ArrayList<>(targets.values());
         int n = items.size();
         int[] parent = new int[n];
         for (int i = 0; i < n; i++) {
@@ -33,12 +34,12 @@ public final class Clustering {
                 }
             }
         }
-        Map<Integer, List<Model.Building>> clusters = new LinkedHashMap<>();
+        Map<Integer, List<Model.ConnectionTarget>> clusters = new LinkedHashMap<>();
         for (int i = 0; i < n; i++) {
             clusters.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(items.get(i));
         }
-        // Крупные кластеры в начало — им важнее хорошая точка врезки
-        List<List<Model.Building>> out = new ArrayList<>(clusters.values());
+        // Крупные кластеры в начало — им важнее хорошая точка присоединения
+        List<List<Model.ConnectionTarget>> out = new ArrayList<>(clusters.values());
         out.sort((a, b) -> Integer.compare(b.size(), a.size()));
         return out;
     }

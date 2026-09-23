@@ -21,14 +21,22 @@ RUN if [ -f dist/index.html ]; then \
 FROM maven:3.8.6-eclipse-temurin-11 AS build
 WORKDIR /build
 # В buildkit-сети IPv6 может зависать — принудительно IPv4;
-# зеркало Aliyun — запасной канал до артефактов Central;
 # wagon rto=45s — «зависшие» скачивания быстро падают и повторяются.
 ENV MAVEN_OPTS="-Djava.net.preferIPv4Stack=true -Dmaven.wagon.rto=45000 -Dmaven.wagon.http.retryHandler.count=5"
 COPY app/.m2-settings.xml /root/.m2/settings.xml
 COPY app/pom.xml .
+# Отдельный слой зависимостей: кешируется, пока не меняется pom.xml —
+# пересборка по изменению исходников не качает весь Central заново.
+# cache-mount /root/.m2/repository: скачанные артефакты сохраняются
+# между попытками и пересборками (buildkit).
+RUN --mount=type=cache,target=/root/.m2/repository \
+    for i in 1 2 3 4 5 6 7 8 9 10; do \
+      timeout 1500 mvn -B dependency:go-offline && break || { echo "deps retry $i"; sleep 5; }; \
+    done
 COPY app/src ./src
 COPY --from=front /front/dist ./src/main/resources/static
-RUN for i in 1 2 3 4 5 6; do \
+RUN --mount=type=cache,target=/root/.m2/repository \
+    for i in 1 2 3 4 5 6 7 8 9 10; do \
       timeout 1500 mvn -B package -DskipTests && break || { echo "package retry $i"; sleep 5; }; \
     done && ls -la target/app.jar
 

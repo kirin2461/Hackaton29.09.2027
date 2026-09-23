@@ -6,96 +6,108 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Выбор точки врезки в существующую сеть — строгое правило §8.2.
+ * Выбор точки присоединения к существующей сети — §2.4 (разъяснение №11).
  *
- * Никакой эвристики ранжирования кандидатов. Детерминированно:
- *   1) если от точки подключения до существующей камеры ≤ 10 м
- *      и у камеры меньше 4 примыкающих участков (считая уже назначенные
- *      в этом расчёте) — врезка в эту камеру (ближайшую из подходящих);
- *   2) иначе — строительство НОВОЙ камеры на ближайшей проекции
- *      точки подключения на существующий участок сети (в радиусе
- *      tap_search_radius_m); если участков в радиусе нет — null
- *      (ОКС уйдёт в unconnected, §2.9).
+ * Детерминированно:
+ *   1) точка присоединения — ближайшая проекция цели на существующий
+ *      участок сети (в радиусе tap_search_radius_m);
+ *   2) если не далее 10 м от неё (или от самой цели) есть существующая
+ *      камера, у которой после подключения будет не более четырёх
+ *      примыканий, — используется эта камера (ближайшая из подходящих).
+ *      Новый участок сети заканчивается в ней;
+ *   3) иначе — НОВАЯ камера непосредственно в выбранной точке
+ *      существующего участка. Отдельный геообъект места присоединения
+ *      не формируется.
  *
- * Стоимость врезки — 5 000 000 ₽ за КАЖДУЮ врезку (§8.2), независимо
- * от вида точки врезки.
+ * Стоимость: врезка в существующую камеру — 5 млн ₽ за КАЖДЫЙ новый
+ * линейный участок, заканчивающийся в ней (§3.2, считается в Costs);
+ * стоимость новой камеры включает присоединение к сети.
  */
 public final class Tapping {
 
     private Tapping() {
     }
 
-    /** Выбранная точка врезки. */
+    /** Выбранная точка присоединения. */
     public static class Tap {
         public final String kind;           // "existing_chamber" | "new_chamber_on_segment"
-        public final Point point;           // точка врезки (метрическая СК)
+        public final Point point;           // точка присоединения (метрическая СК)
         public final double flowTph;        // расход, который войдёт в сеть в этой точке
-        public double requiredDn;           // Ду новой сети в точке врезки (§10.2)
+        public double requiredDn;           // ДУ новой сети в точке присоединения
         public String chamberId;            // для existing_chamber
         public String segmentId;            // для new_chamber_on_segment
-        public double alongM;               // отметка точки врезки вдоль участка (для §7)
-        public String chainStartId;         // с чего начинать цепочку к источнику
-        public double tapCostRub;
-        public String nodeId;               // tie-N (назначается конвейером)
+        public String nodeId;               // id узла (назначается конвейером)
 
         public Tap(String kind, Point point, double flowTph, double requiredDn,
-                   String chamberId, String segmentId, double alongM,
-                   String chainStartId, double tapCostRub) {
+                   String chamberId, String segmentId) {
             this.kind = kind;
             this.point = point;
             this.flowTph = flowTph;
             this.requiredDn = requiredDn;
             this.chamberId = chamberId;
             this.segmentId = segmentId;
-            this.alongM = alongM;
-            this.chainStartId = chainStartId;
-            this.tapCostRub = tapCostRub;
         }
     }
 
-    /** Строгое правило §8.2 выбора точки врезки. */
-    public static Tap chooseTapStrict(org.locationtech.jts.geom.Point anchor,
-                                      double flowTph,
-                                      ExistingNetwork net,
-                                      RefData refdata,
+    /** Строгое правило §2.4 выбора точки присоединения. */
+    public static Tap chooseTapStrict(Point anchor, double flowTph,
+                                      ExistingNetwork net, RefData refdata,
                                       Map<String, Integer> chamberLoad) {
         double maxDist = refdata.rule("chamber_tap_max_dist_m");
         int maxConn = (int) refdata.rule("max_chamber_connections");
+        double snapM = refdata.rule("chamber_snap_m");
         double requiredDn = RefData.num(refdata.diameterForFlow(flowTph).get("dn_mm"));
-        double tieCost = refdata.tieInCost();
 
-        // --- шаг 1: камера ≤ 10 м со свободными примыканиями ---
+        // --- шаг 1: точка присоединения — проекция на ближайший участок ---
+        List<Map.Entry<String, Double>> near =
+                net.segmentsNear(anchor, refdata.rule("tap_search_radius_m"));
+        Point projection = null;
+        String projectionSegmentId = null;
+        if (!near.isEmpty()) {
+            projectionSegmentId = near.get(0).getKey();
+            Model.Segment seg = net.segments.get(projectionSegmentId);
+            org.locationtech.jts.linearref.LengthIndexedLine lil =
+                    new org.locationtech.jts.linearref.LengthIndexedLine(seg.geom);
+            double along = lil.indexOf(anchor.getCoordinate());
+            org.locationtech.jts.geom.Coordinate c = lil.extractPoint(along);
+            projection = seg.geom.getFactory().createPoint(c);
+        }
+
+        // --- шаг 2: существующая камера ≤ 10 м от точки присоединения ---
         String best = null;
         double bestDist = Double.POSITIVE_INFINITY;
-        for (Map.Entry<String, Double> e : net.chambersNear(anchor, maxDist)) {
-            if (net.chamberFreeConnections(e.getKey(), chamberLoad, maxConn) <= 0) {
-                continue; // камера рядом, но примыканий уже 4 — новая камера
+        if (projection != null) {
+            for (Map.Entry<String, Double> e : net.chambersNear(projection, maxDist)) {
+                if (net.chamberFreeConnections(e.getKey(), chamberLoad, maxConn, snapM) <= 0) {
+                    continue;
+                }
+                if (e.getValue() < bestDist) {
+                    bestDist = e.getValue();
+                    best = e.getKey();
+                }
             }
-            if (e.getValue() < bestDist) {
-                bestDist = e.getValue();
+        }
+        // камера рядом с самой целью (точку присоединения можно выбрать и там)
+        for (Map.Entry<String, Double> e : net.chambersNear(anchor, maxDist)) {
+            if (net.chamberFreeConnections(e.getKey(), chamberLoad, maxConn, snapM) <= 0) {
+                continue;
+            }
+            double d = e.getValue();
+            if (d < bestDist) {
+                bestDist = d;
                 best = e.getKey();
             }
         }
         if (best != null) {
             Model.Chamber ch = net.chambers.get(best);
-            return new Tap("existing_chamber", ch.geom, flowTph, requiredDn,
-                    best, null, 0.0, best, tieCost);
+            return new Tap("existing_chamber", ch.geom, flowTph, requiredDn, best, null);
         }
 
-        // --- шаг 2: новая камера на ближайшей проекции на участок ---
-        List<Map.Entry<String, Double>> near =
-                net.segmentsNear(anchor, refdata.rule("tap_search_radius_m"));
-        if (near.isEmpty()) {
-            return null;
+        // --- шаг 3: новая камера в выбранной точке существующего участка ---
+        if (projection == null) {
+            return null; // сети в радиусе поиска нет — точка уйдёт в неподключённые
         }
-        String sid = near.get(0).getKey();
-        Model.Segment seg = net.segments.get(sid);
-        org.locationtech.jts.linearref.LengthIndexedLine lil =
-                new org.locationtech.jts.linearref.LengthIndexedLine(seg.geom);
-        double along = lil.indexOf(anchor.getCoordinate());
-        org.locationtech.jts.geom.Coordinate c = lil.extractPoint(along);
-        Point pt = seg.geom.getFactory().createPoint(c);
-        return new Tap("new_chamber_on_segment", pt, flowTph, requiredDn,
-                null, sid, along, sid, tieCost);
+        return new Tap("new_chamber_on_segment", projection, flowTph, requiredDn,
+                null, projectionSegmentId);
     }
 }

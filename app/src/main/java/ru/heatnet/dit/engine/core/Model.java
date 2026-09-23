@@ -1,5 +1,6 @@
 package ru.heatnet.dit.engine.core;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.LineString;
 import org.locationtech.jts.geom.Point;
@@ -10,17 +11,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Доменная модель конкурсного набора (официальная схема §2.1 техприложения).
- * Типы объектов входного GeoJSON (properties.object_type, таблица 2.1):
- * source, heat_network, heat_chamber, oks_future, oks_connection_point,
- * oks_existing, restriction.
+ * Доменная модель конкурсного набора (официальная схема §1 техприложения,
+ * актуальная редакция). Типы объектов входного GeoJSON
+ * (properties.object_type, таблица §1.1):
+ * source, heat_network, heat_chamber, oks_connection_point, restriction.
+ * Полигоны ОКС передаются как restriction с restriction_type = oks (§1.2).
  */
 public final class Model {
 
     private Model() {
     }
 
-    /** Источник теплоснабжения (корень цепочки upstream_object_id). */
+    /** Источник теплоснабжения. */
     public static class Source {
         public final String objectId;
         public final Point geom;
@@ -31,13 +33,13 @@ public final class Model {
         }
     }
 
-    /** Участок существующей тепловой сети. */
+    /** Участок существующей тепловой сети (обязательные атрибуты: id, diameter). */
     public static class Segment {
         public final String objectId;
         public final LineString geom;
         public Double diameterMm;          // может отсутствовать во входе
-        public double flowTph;
-        public String nextObjectId;        // upstream_object_id — к источнику
+        public double flowTph;             // необязательный атрибут (расширение)
+        public String nextObjectId;        // необязательный upstream (ранние наборы)
 
         public Segment(String objectId, LineString geom, Double diameterMm,
                        double flowTph, String nextObjectId) {
@@ -53,21 +55,19 @@ public final class Model {
         }
     }
 
-    /**
-     * Тепловая камера (существующая). diameterMm — входное значение:
-     * максимальный условный диаметр существующих участков, уже примыкающих
-     * к камере (§2.2).
-     */
+    /** Существующая тепловая камера (обязательные атрибуты: id). */
     public static class Chamber {
         public final String objectId;
+        public final JsonNode idRaw;       // исходный id (для ссылок в выгрузке)
         public final Point geom;
-        public Double diameterMm;
+        public Double diameterMm;          // необязательный атрибут
         public int occupiedConnections;    // запасной ввод (не из официальной схемы)
-        public String nextObjectId;        // upstream_object_id
+        public String nextObjectId;        // необязательный upstream (ранние наборы)
 
-        public Chamber(String objectId, Point geom, Double diameterMm,
+        public Chamber(String objectId, JsonNode idRaw, Point geom, Double diameterMm,
                        int occupiedConnections, String nextObjectId) {
             this.objectId = objectId;
+            this.idRaw = idRaw;
             this.geom = geom;
             this.diameterMm = diameterMm;
             this.occupiedConnections = occupiedConnections;
@@ -75,40 +75,40 @@ public final class Model {
         }
     }
 
-    /** Перспективный ОКС. */
-    public static class Building {
+    /**
+     * Точка подключения ОКС (oks_connection_point) — самостоятельная цель
+     * подключения (§1.1, разъяснение №4). Расход flow_tph задан на самой
+     * точке. Связь с полигоном ОКС идентификатором не задаётся — полигон
+     * находится пространственно (restriction_type = oks, §2.2).
+     */
+    public static class ConnectionTarget {
         public final String objectId;
-        public final Geometry geom;        // Polygon / MultiPolygon / Point
-        public final double flowTph;
-        public Point connectionPoint;      // заполняется при загрузке
-        public String connectionPointId;   // id точки подключения (§2.2: oks_id)
+        public final JsonNode idRaw;       // исходный id (тип сохраняется, §7.2)
+        public final Point point;
+        public double flowTph;
+        public String oksZoneId;           // id содержащего полигона ОКС (или null)
 
-        public Building(String objectId, Geometry geom, double flowTph) {
+        public ConnectionTarget(String objectId, JsonNode idRaw, Point point, double flowTph) {
             this.objectId = objectId;
-            this.geom = geom;
+            this.idRaw = idRaw;
+            this.point = point;
             this.flowTph = flowTph;
         }
 
-        /** Точка привязки: точка подключения, иначе центроид. */
+        /** Точка привязки — сама точка подключения. */
         public Point anchor() {
-            if (connectionPoint != null) {
-                return connectionPoint;
-            }
-            if (geom instanceof Point) {
-                return (Point) geom;
-            }
-            return geom.getCentroid();
+            return point;
         }
     }
 
     /**
-     * Пространственное ограничение (restriction, таблица 5.1).
+     * Пространственное ограничение (restriction, таблица 2).
      * kind: forbidden | special_passage — правило обработки;
-     * restrictionType — исходный тип (road, oks_existing, ...).
+     * restrictionType — канонический тип (road, oks, railway, ...).
      */
     public static class ConstraintZone {
         public final String objectId;
-        public final Geometry geom;        // Polygon / MultiPolygon / LineString / Point
+        public final Geometry geom;        // Polygon / MultiPolygon / LineString / MultiLineString
         public final String kind;
         public final Map<String, Object> params;
         public final String restrictionType;
@@ -123,11 +123,11 @@ public final class Model {
         }
     }
 
-    /** Разобранный конкурсный набор в метрической СК. */
+    /** Разобранный конкурсный набор в метрической СК (EPSG:32637). */
     public static class ContestData {
         public Map<String, Segment> segments = new LinkedHashMap<>();
         public Map<String, Chamber> chambers = new LinkedHashMap<>();
-        public Map<String, Building> buildings = new LinkedHashMap<>();
+        public Map<String, ConnectionTarget> targets = new LinkedHashMap<>();
         public Map<String, Source> sources = new LinkedHashMap<>();
         public List<ConstraintZone> constraints = new ArrayList<>();
         public String crsFrom;             // исходная СК (EPSG:4326 по техприложению)

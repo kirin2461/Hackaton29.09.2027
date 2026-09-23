@@ -20,11 +20,11 @@ import java.util.Set;
  * Весовая сетка пространственных ограничений + A* (таблица 5.1).
  *
  *   forbidden — пересечение запрещено: геометрия зоны непроходима,
- *               а МИНИМАЛЬНОЕ РАССТОЯНИЕ (для oks_existing — 5/7/9 м по Ду
- *               новой сети, для park/social_area/prohibited_site/water —
- *               1,0 м) обеспечивается ВРЕМЕННЫМИ буферными блокировками
- *               под конкретный диаметр прокладываемой трассы. Расстояние
- *               считается между ГРАНЯМИ расчётных габаритов (таблица 4.2).
+ *               а МИНИМАЛЬНОЕ РАССТОЯНИЕ (для oks — 5/7/9 м по ДУ новой сети,
+ *               для park/social_area/prohibited_site/water/railway — 1,0 м)
+ *               обеспечивается ВРЕМЕННЫМИ буферными блокировками под
+ *               конкретный диаметр прокладываемой трассы. Расстояние
+ *               считается между ГРАНЯМИ расчётных габаритов (таблица 1, §3.1).
  *
  *   special_passage — спецпроход: проходимо с множителем Kспец зоны.
  */
@@ -49,6 +49,9 @@ public class ConstraintGrid {
     public final List<Model.ConstraintZone> specialZones = new ArrayList<>();
     private final List<Model.ConstraintZone> forbiddenZones = new ArrayList<>();
     private final Map<String, Geometry> clearanceCache = new HashMap<>();
+    // точки присоединения к существующей сети: пересечение в месте врезки
+    // спецпроходом не считается (разъяснение №10 — это не пересечение)
+    private final Map<String, List<Point>> tapExclusions = new HashMap<>();
 
     public ConstraintGrid(double[] bounds, RefData refdata) {
         this.cell = refdata.rule("grid_cell_m");
@@ -129,8 +132,20 @@ public class ConstraintGrid {
 
     /** Временно заблокировать отступы запретных зон под диаметр трассы. */
     public List<int[]> clearanceBlock(double dnMm) {
+        return clearanceBlock(dnMm, java.util.Collections.emptySet());
+    }
+
+    /**
+     * Временно заблокировать отступы запретных зон под диаметр трассы.
+     * Зоны из skipZoneIds пропускаются — §2.2: отступ к СВОЕМУ полигону ОКС
+     * на финальный участок к целевой точке не распространяется.
+     */
+    public List<int[]> clearanceBlock(double dnMm, Set<String> skipZoneIds) {
         List<int[]> cells = new ArrayList<>();
         for (Model.ConstraintZone z : forbiddenZones) {
+            if (skipZoneIds.contains(z.objectId)) {
+                continue;
+            }
             Geometry buf = clearanceBufferGeom(z, dnMm);
             for (int[] c : cellsCoveredBy(buf)) {
                 if (!blocked[c[0]][c[1]]) {
@@ -149,11 +164,37 @@ public class ConstraintGrid {
     }
 
     /**
-     * ID запретной зоны, если точка внутри неё/её отступа (для §2.9).
-     * Проверка по ГЕОМЕТРИИ зон (не по растру).
+     * Освободить ячейки, занятые геометрией (свой полигон ОКС, §2.2).
+     * Возвращает ранее заблокированные ячейки для последующего восстановления.
      */
-    public String forbiddenReason(Point pt, Double dnMm) {
+    public List<int[]> freeCells(Geometry geom) {
+        List<int[]> freed = new ArrayList<>();
+        for (int[] c : cellsCoveredBy(geom)) {
+            if (blocked[c[0]][c[1]]) {
+                blocked[c[0]][c[1]] = false;
+                freed.add(c);
+            }
+        }
+        return freed;
+    }
+
+    /** Восстановить блокировку ячеек, освобождённых freeCells. */
+    public void blockCells(List<int[]> cells) {
+        for (int[] c : cells) {
+            blocked[c[0]][c[1]] = true;
+        }
+    }
+
+    /**
+     * ID запретной зоны, если точка внутри неё/её отступа.
+     * Проверка по ГЕОМЕТРИИ зон (не по растру); зоны из skipZoneIds
+     * пропускаются (свой полигон ОКС целевой точки, §2.2).
+     */
+    public String forbiddenReason(Point pt, Double dnMm, Set<String> skipZoneIds) {
         for (Model.ConstraintZone z : forbiddenZones) {
+            if (skipZoneIds.contains(z.objectId)) {
+                continue;
+            }
             if (dnMm != null) {
                 if (clearanceBufferGeom(z, dnMm).intersects(pt)) {
                     return z.objectId;
@@ -163,6 +204,59 @@ public class ConstraintGrid {
             }
         }
         return null;
+    }
+
+    public String forbiddenReason(Point pt, Double dnMm) {
+        return forbiddenReason(pt, dnMm, java.util.Collections.emptySet());
+    }
+
+    /**
+     * ID запретной зоны, которую пересекает ЛИНИЯ (по геометрии зон).
+     * Зоны из skipZoneIds пропускаются. null — пересечений нет.
+     */
+    public String forbiddenLineHit(LineString line, Set<String> skipZoneIds) {
+        for (Model.ConstraintZone z : forbiddenZones) {
+            if (skipZoneIds.contains(z.objectId)) {
+                continue;
+            }
+            if (z.geom.intersects(line)) {
+                return z.objectId;
+            }
+        }
+        return null;
+    }
+
+    // ---------- точки присоединения (исключение из спецпроходов heat_network) ----------
+
+    /** Зарегистрировать точку присоединения на существующем участке (id зоны = id участка). */
+    public void addTapExclusion(String zoneId, Point pt) {
+        tapExclusions.computeIfAbsent(zoneId, k -> new ArrayList<>()).add(pt);
+    }
+
+    /** Сбросить точки присоединения (между вариантами). */
+    public void clearTapExclusions() {
+        tapExclusions.clear();
+    }
+
+    /**
+     * Точка присоединения рядом с отрезком [aM, bM] вдоль линии lil?
+     * Используется режимом глубины: место врезки — не пересечение
+     * (разъяснение №10), вертикальные ограничения там не применяются.
+     */
+    public boolean tapExclusionNear(String zoneId,
+                                    org.locationtech.jts.linearref.LengthIndexedLine lil,
+                                    double aM, double bM, double marginM) {
+        List<Point> taps = tapExclusions.get(zoneId);
+        if (taps == null || taps.isEmpty()) {
+            return false;
+        }
+        for (Point tp : taps) {
+            double dTap = lil.indexOf(tp.getCoordinate());
+            if (dTap >= aM - marginM && dTap <= bM + marginM) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ---------- границы спецучастков (таблица 5.1) ----------
@@ -209,6 +303,7 @@ public class ConstraintGrid {
             String mode = String.valueOf(rule.getOrDefault("extent_mode", "polygon"));
             String gtype = z.geom.getGeometryType();
             Geometry inter = line.intersection(z.geom);
+            List<SpecialInterval> zoneIntervals = new ArrayList<>();
             if ("polygon".equals(mode) || "Polygon".equals(gtype) || "MultiPolygon".equals(gtype)) {
                 List<double[]> pts = intervalPoints(inter);
                 if (pts.isEmpty()) {
@@ -220,15 +315,36 @@ public class ConstraintGrid {
                     a = Math.min(a, d);
                     b = Math.max(b, d);
                 }
-                raw.add(new SpecialInterval(Math.max(0.0, a - extent),
+                zoneIntervals.add(new SpecialInterval(Math.max(0.0, a - extent),
                         Math.min(length, b + extent), z.objectId, k));
             } else {
                 for (double[] p : intervalPoints(inter)) {
                     double d = lil.indexOf(new Coordinate(p[0], p[1]));
-                    raw.add(new SpecialInterval(Math.max(0.0, d - extent),
+                    zoneIntervals.add(new SpecialInterval(Math.max(0.0, d - extent),
                             Math.min(length, d + extent), z.objectId, k));
                 }
             }
+            // точка присоединения (врезка) — не пересечение: интервалы вокруг
+            // неё не считаются спецпроходом (§2.4 + разъяснение №10)
+            List<Point> taps = tapExclusions.get(z.objectId);
+            if (taps != null && !taps.isEmpty()) {
+                List<SpecialInterval> kept = new ArrayList<>();
+                for (SpecialInterval iv : zoneIntervals) {
+                    boolean atTap = false;
+                    for (Point tp : taps) {
+                        double dTap = lil.indexOf(tp.getCoordinate());
+                        if (dTap >= iv.a - extent - 1.0 && dTap <= iv.b + extent + 1.0) {
+                            atTap = true;
+                            break;
+                        }
+                    }
+                    if (!atTap) {
+                        kept.add(iv);
+                    }
+                }
+                zoneIntervals = kept;
+            }
+            raw.addAll(zoneIntervals);
         }
         return mergeIntervals(raw);
     }

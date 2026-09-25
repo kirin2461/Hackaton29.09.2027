@@ -10,6 +10,7 @@ import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -122,19 +123,35 @@ public final class Pipeline {
         final boolean cluster;               // совместное подключение кластеров точек
         final double turnPenaltyMult;        // множитель штрафа за поворот
         final boolean avoidPrevious;         // обходить коридоры предыдущих вариантов
+        final boolean chain;                 // общий ствол с цепочкой камер разветвления
+        final double clusterRadiusMult;      // множитель радиуса кластеризации
 
         Strategy(String label, boolean cluster, double turnPenaltyMult, boolean avoidPrevious) {
+            this(label, cluster, turnPenaltyMult, avoidPrevious, false, 1.0);
+        }
+
+        Strategy(String label, boolean cluster, double turnPenaltyMult, boolean avoidPrevious,
+                 boolean chain, double clusterRadiusMult) {
             this.label = label;
             this.cluster = cluster;
             this.turnPenaltyMult = turnPenaltyMult;
             this.avoidPrevious = avoidPrevious;
+            this.chain = chain;
+            this.clusterRadiusMult = clusterRadiusMult;
         }
     }
 
     private static final List<Strategy> STRATEGIES = List.of(
             new Strategy("Совместное подключение, базовый коридор", true, 1.0, false),
             new Strategy("Раздельное подключение", false, 1.0, false),
-            new Strategy("Совместное подключение, альтернативный коридор", true, 4.0, true)
+            new Strategy("Совместное подключение, альтернативный коридор", true, 4.0, true),
+            // Общий ствол: крупные группы точек обслуживаются одним присоединением
+            // и цепочкой камер разветвления вдоль коридора (экономия на врезках
+            // и на параллельных стволах). Соревнуются с базовыми по §6.
+            new Strategy("Совместное подключение, общий ствол (цепочка камер)",
+                    true, 1.0, false, true, 2.0),
+            new Strategy("Совместное подключение, магистральный коридор (цепочка камер)",
+                    true, 1.0, false, true, 3.5)
     );
 
     // ------------------------------------------------------------------
@@ -197,12 +214,14 @@ public final class Pipeline {
             for (NewSegment s : variant.newSegments) {
                 prevPaths.add(s.coords);
             }
-            if (variants.size() >= 3) {
-                break;
-            }
         }
 
+        // §6: сначала ранжируем ВСЕ посчитанные варианты, затем оставляем
+        // три лучших (выходной формат §7 — не более трёх вариантов)
         Costs.rankVariants(variants, ref);
+        while (variants.size() > 3) {
+            variants.remove(variants.size() - 1);
+        }
 
         Variant best = !variants.isEmpty() ? variants.get(0) : emptyVariant(ref);
         Map<String, Object> summary = new LinkedHashMap<>();
@@ -244,11 +263,63 @@ public final class Pipeline {
 
         List<List<Model.ConnectionTarget>> groups;
         if (strategy.cluster) {
-            groups = Clustering.clusterTargets(data.targets, ref.rule("cluster_radius_m"));
+            double radius = ref.rule("cluster_radius_m") * strategy.clusterRadiusMult;
+            groups = Clustering.clusterTargets(data.targets, radius);
         } else {
             groups = new ArrayList<>();
             for (Model.ConnectionTarget t : data.targets.values()) {
                 groups.add(List.of(t));
+            }
+        }
+        if (strategy.chain) {
+            // Цепочный ствол: пакет ограничен по расходу — крупный ДУ ствола
+            // не должен ломать отступы §3.1 в застройке (потолок — ДУ200,
+            // chain_group_max_flow_tph). Пространственно-жадное разбиение.
+            double flowCap = ref.rule("chain_group_max_flow_tph");
+            if (flowCap > 0) {
+                List<List<Model.ConnectionTarget>> capped = new ArrayList<>();
+                for (List<Model.ConnectionTarget> g : groups) {
+                    double sum = 0.0;
+                    for (Model.ConnectionTarget t : g) {
+                        sum += t.flowTph;
+                    }
+                    if (sum <= flowCap) {
+                        capped.add(g);
+                        continue;
+                    }
+                    List<Model.ConnectionTarget> rest = new ArrayList<>(g);
+                    while (!rest.isEmpty()) {
+                        List<Model.ConnectionTarget> cur = new ArrayList<>();
+                        Model.ConnectionTarget seed = rest.remove(0);
+                        cur.add(seed);
+                        double f = seed.flowTph;
+                        for (;;) {
+                            Model.ConnectionTarget bestT = null;
+                            double bestD = Double.MAX_VALUE;
+                            for (Model.ConnectionTarget t : rest) {
+                                if (f + t.flowTph > flowCap) {
+                                    continue;
+                                }
+                                double dd = Double.MAX_VALUE;
+                                for (Model.ConnectionTarget c : cur) {
+                                    dd = Math.min(dd, c.anchor().distance(t.anchor()));
+                                }
+                                if (dd < bestD) {
+                                    bestD = dd;
+                                    bestT = t;
+                                }
+                            }
+                            if (bestT == null) {
+                                break;
+                            }
+                            cur.add(bestT);
+                            rest.remove(bestT);
+                            f += bestT.flowTph;
+                        }
+                        capped.add(cur);
+                    }
+                }
+                groups = capped;
             }
         }
 
@@ -258,6 +329,12 @@ public final class Pipeline {
         Map<String, Integer> seq = new HashMap<>(Map.of("seg", 0, "chamber", 0, "tech", 0));
 
         for (List<Model.ConnectionTarget> group : groups) {
+            if (strategy.chain && group.size() > maxDirs) {
+                // Общий ствол с цепочкой камер; при неудаче — обычная схема
+                if (processPackChained(group, net, grid, ref, strategy, chamberLoad, seq, zoneById, v)) {
+                    continue;
+                }
+            }
             for (List<Model.ConnectionTarget> pack : chunk(group, maxDirs)) {
                 processPack(pack, net, grid, ref, strategy, chamberLoad, seq, zoneById, v);
             }
@@ -588,6 +665,185 @@ public final class Pipeline {
             }
         }
         assertTree(v.newSegments.subList(segsBefore, v.newSegments.size()), v.warnings);
+    }
+
+    /**
+     * Пачка точек под ОБЩИЙ ствол с цепочкой камер разветвления (§2.1).
+     *
+     * Вместо отдельного присоединения на каждые maxDirs точек строится один
+     * ствол от места присоединения; вдоль него — цепочка камер разветвления.
+     * Промежуточная камера обслуживает не более maxDirs−1 точек (2 примыкания
+     * занято стволом), последняя — до maxDirs. Расход ствола убывает по
+     * цепочке, ДУ каждого звена — по своему расходу (§2.3 уточняет гидравлика).
+     *
+     * @return true, если пачка обработана; false — ствол не построен,
+     *         всё откачено, вызывающий код повторяет пачку в обычной схеме.
+     */
+    private static boolean processPackChained(List<Model.ConnectionTarget> pack0, ExistingNetwork net,
+                                              ConstraintGrid grid, RefData ref, Strategy strategy,
+                                              Map<String, Integer> chamberLoad, Map<String, Integer> seq,
+                                              Map<String, Model.ConstraintZone> zoneById, Variant v) {
+        int maxDirs = (int) ref.rule("max_new_directions_per_chamber");
+        // Точки в чужих запретных зонах — как в processPack (§2.5, §2.2)
+        List<Model.ConnectionTarget> pack = new ArrayList<>();
+        for (Model.ConnectionTarget t : pack0) {
+            double dnT = RefData.num(ref.diameterForFlow(t.flowTph).get("dn_mm"));
+            Set<String> skip = t.oksZoneId != null ? Set.of(t.oksZoneId) : Set.of();
+            String zoneId = grid.forbiddenReason(t.point, dnT, skip);
+            if (zoneId != null) {
+                v.unconnected.add(new Unconnected(t.objectId, t.point, t.flowTph,
+                        "точка подключения в запретной зоне " + zoneId));
+            } else {
+                pack.add(t);
+            }
+        }
+        if (pack.isEmpty()) {
+            return true;
+        }
+        if (pack.size() <= maxDirs) {
+            processPack(pack, net, grid, ref, strategy, chamberLoad, seq, zoneById, v);
+            return true;
+        }
+
+        double flowTotal = 0.0;
+        double cx = 0.0, cy = 0.0;
+        for (Model.ConnectionTarget t : pack) {
+            flowTotal += t.flowTph;
+            cx += t.anchor().getX();
+            cy += t.anchor().getY();
+        }
+        cx /= pack.size();
+        cy /= pack.size();
+        Point clusterCenter = GF.createPoint(new Coordinate(cx, cy));
+
+        Tapping.Tap tap = Tapping.chooseTapStrict(clusterCenter, flowTotal, net, ref, chamberLoad, grid);
+        if (tap == null) {
+            for (Model.ConnectionTarget t : pack) {
+                v.unconnected.add(new Unconnected(t.objectId, t.anchor(), t.flowTph,
+                        "нет доступных точек присоединения в радиусе поиска"));
+            }
+            return true;
+        }
+        if ("new_chamber_on_segment".equals(tap.kind)) {
+            String tapHit = grid.forbiddenReason(tap.point,
+                    RefData.num(ref.diameterForFlow(flowTotal).get("dn_mm")),
+                    java.util.Collections.emptySet());
+            if (tapHit != null) {
+                v.warnings.add("врезка: новая камера в отступе запретной зоны " + tapHit
+                        + " — чистой позиции на участке не нашлось (§3.1)");
+            }
+        }
+        v.taps.add(tap);
+        // Разъяснение №10: место присоединения — не пересечение
+        for (Map.Entry<String, Double> e : net.segmentsNear(tap.point, 5.0)) {
+            grid.addTapExclusion(e.getKey(), tap.point);
+        }
+        int tapsBefore = v.taps.size() - 1;
+        int chambersBefore = v.newChambers.size();
+        int techBefore = v.techNodes.size();
+        String loadChamberId = null;
+
+        String tapNode;
+        if ("existing_chamber".equals(tap.kind)) {
+            chamberLoad.merge(tap.chamberId, 1, Integer::sum);
+            loadChamberId = tap.chamberId;
+            tapNode = tap.chamberId;
+        } else {
+            seq.merge("chamber", 1, Integer::sum);
+            tapNode = "ch-" + seq.get("chamber");
+            v.newChambers.add(new NewChamber(tapNode, "tapping_on_segment",
+                    tap.point, tap.segmentId, tap.requiredDn));
+        }
+
+        int segsBefore = v.newSegments.size();
+        final String loadChamberIdF = loadChamberId;
+        Runnable rollback = () -> {
+            sublistClear(v.newSegments, segsBefore);
+            sublistClear(v.taps, tapsBefore);
+            sublistClear(v.newChambers, chambersBefore);
+            sublistClear(v.techNodes, techBefore);
+            if (loadChamberIdF != null) {
+                chamberLoad.merge(loadChamberIdF, 0, (cur, z) -> Math.max(0, cur - 1));
+            }
+        };
+
+        double turnPenalty = ref.rule("turn_penalty_m") * strategy.turnPenaltyMult;
+
+        // Порядок обслуживания: ближайшие к месту присоединения — первыми,
+        // ствол тянется вглубь кластера, расход по цепочке убывает.
+        List<Model.ConnectionTarget> ordered = new ArrayList<>(pack);
+        final Point tapPt = tap.point;
+        ordered.sort(Comparator.comparingDouble(t -> t.anchor().distance(tapPt)));
+
+        // Подгруппы: промежуточные камеры — по (maxDirs−1) точек,
+        // последняя камера — остаток (≤ maxDirs).
+        int perMid = Math.max(1, maxDirs - 1);
+        List<List<Model.ConnectionTarget>> subs = new ArrayList<>();
+        int idx = 0;
+        while (pack.size() - idx > maxDirs) {
+            subs.add(new ArrayList<>(ordered.subList(idx, idx + perMid)));
+            idx += perMid;
+        }
+        subs.add(new ArrayList<>(ordered.subList(idx, ordered.size())));
+
+        StringBuilder owner = new StringBuilder();
+        for (int i = 0; i < pack.size(); i++) {
+            if (i > 0) {
+                owner.append("+");
+            }
+            owner.append(pack.get(i).objectId);
+        }
+
+        Point prevPt = tap.point;
+        String prevNode = tapNode;
+        double remaining = flowTotal;
+        boolean failed = false;
+        for (List<Model.ConnectionTarget> sub : subs) {
+            double sx = 0.0, sy = 0.0, subFlow = 0.0;
+            for (Model.ConnectionTarget t : sub) {
+                sx += t.anchor().getX();
+                sy += t.anchor().getY();
+                subFlow += t.flowTph;
+            }
+            Point subCenter = GF.createPoint(new Coordinate(sx / sub.size(), sy / sub.size()));
+            double dnRun = RefData.num(ref.diameterForFlow(remaining).get("dn_mm"));
+            Point branchPt = grid.snapFreeClearance(subCenter, dnRun);
+            seq.merge("chamber", 1, Integer::sum);
+            String branchNode = "ch-" + seq.get("chamber");
+            v.newChambers.add(new NewChamber(branchNode, "branching", branchPt, null, 0.0));
+            boolean ok = appendChecked(grid, prevPt, branchPt, null,
+                    prevPt.getCoordinate(), branchPt.getCoordinate(),
+                    remaining, "trunk", prevNode, branchNode,
+                    turnPenalty, dnRun, zoneById, ref, seq, v, owner.toString());
+            if (!ok) {
+                failed = true;
+                break;
+            }
+            for (Model.ConnectionTarget t : sub) {
+                double dnT = RefData.num(ref.diameterForFlow(t.flowTph).get("dn_mm"));
+                boolean okBr = appendChecked(grid, branchPt, null, t,
+                        branchPt.getCoordinate(), t.point.getCoordinate(),
+                        t.flowTph, "branch", branchNode, t.objectId,
+                        turnPenalty, dnT, zoneById, ref, seq, v, t.objectId);
+                if (!okBr) {
+                    failed = true;
+                    break;
+                }
+            }
+            if (failed) {
+                break;
+            }
+            prevPt = branchPt;
+            prevNode = branchNode;
+            remaining -= subFlow;
+        }
+        if (failed) {
+            rollback.run();
+            v.warnings.add("цепочка камер: ствол не построен — пачка повторяется в обычной схеме");
+            return false;
+        }
+        assertTree(v.newSegments.subList(segsBefore, v.newSegments.size()), v.warnings);
+        return true;
     }
 
     private static void sublistClear(List<?> list, int from) {
